@@ -113,6 +113,52 @@ export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
 pip install mtkahypar
 ```
 
+## Scoring / Validation
+
+The built-in scorer validates partitions and computes KM1 connectivity. It is designed for transparent third-party verification.
+
+```bash
+./target/release/hg_bench score \
+    --hgr /tmp/challenge_10000_<seed>.hgr \
+    --partition /tmp/partition_10000_<seed>.txt \
+    --k 64 \
+    --epsilon 0.03
+```
+
+The scorer is intentionally strict:
+
+- Partition length **must equal** the number of nodes
+- Every label must be in the range **`[0, k-1]`**
+- Balance constraint: `max_block <= ceil((n/k) * (1 + epsilon))`
+
+**Exit Codes:**
+
+| Code | Meaning |
+|------|---------|
+| 0 | Valid and feasible partition |
+| 1 | Invalid input (wrong length, labels out of range) |
+| 2 | Valid but infeasible (balance constraint violated) |
+
+### Validation Examples
+
+```bash
+# Valid partition - exit 0
+./target/release/hg_bench score --hgr /tmp/test.hgr --partition /tmp/valid.txt --k 64 --epsilon 0.03
+# Output: Feasible: YES
+# Exit code: 0
+
+# Wrong length - exit 1
+echo "0" > /tmp/bad.txt
+./target/release/hg_bench score --hgr /tmp/test.hgr --partition /tmp/bad.txt --k 64 --epsilon 0.03
+# ERROR: Invalid partition - Partition length mismatch: expected 8607 nodes, got 1
+# Exit code: 1
+
+# Invalid label - exit 1
+./target/release/hg_bench score --hgr /tmp/test.hgr --partition /tmp/bad_label.txt --k 64 --epsilon 0.03
+# ERROR: Invalid partition - Invalid partition label at node 100: 999 (must be < 64)
+# Exit code: 1
+```
+
 ## Usage
 
 ### Command Overview
@@ -204,13 +250,6 @@ Feasible: YES
 
 Note: KM1 = Σ(λ(e)-1) where λ(e) = parts connected by hyperedge e
 ```
-
-**Exit Codes (for CI/verification):**
-| Code | Meaning |
-|------|---------|
-| 0 | Valid and feasible partition |
-| 1 | Invalid input (wrong length, labels out of range) |
-| 2 | Valid but infeasible (balance constraint violated) |
 
 ## CLI Reference
 
