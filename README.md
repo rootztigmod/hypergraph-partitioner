@@ -60,7 +60,7 @@ This ensures anyone can regenerate identical instances for verification.
 
 ### Comparison Setup
 
-- **sigma_freud_v5**: Single NVIDIA GPU
+- **sigma_freud_v5**: Single NVIDIA GPU, `effort=3` (600 refinement rounds)
 - **Mt-KaHyPar**: 16 CPU threads, `quality` preset, connectivity objective
 
 Both solvers receive identical .hgr format hypergraphs and are measured on partition time only (excluding I/O).
