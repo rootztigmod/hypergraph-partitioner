@@ -6,6 +6,7 @@ use cudarc::runtime::sys::cudaDeviceProp;
 use std::sync::Arc;
 
 pub struct GpuContext {
+    #[allow(dead_code)]
     pub ctx: Arc<CudaContext>,
     pub stream: Arc<CudaStream>,
     pub module: Arc<CudaModule>,

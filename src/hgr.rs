@@ -115,6 +115,7 @@ fn build_node_to_hyperedge(
     (node_offsets, node_hyperedges)
 }
 
+#[allow(dead_code)]
 pub fn write_hgr(path: &Path, hypergraph: &Hypergraph) -> Result<()> {
     let file = File::create(path)?;
     let mut writer = BufWriter::new(file);
@@ -165,6 +166,7 @@ pub fn write_partition(path: &Path, partition: &[u32]) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn write_partition_with_timing(path: &Path, partition: &[u32], elapsed_secs: f64) -> Result<()> {
     write_partition(path, partition)?;
 
