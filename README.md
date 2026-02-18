@@ -217,7 +217,7 @@ Feasible: YES
 | 2 | 500 | Balanced (default) |
 | 3 | 600 | Quality focus |
 | 4 | 800 | High quality |
-| 5 | 1000 | Maximum quality |
+| 5 | 1000 | Higher quality |
 
 ### `file` Command
 
