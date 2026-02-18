@@ -245,7 +245,7 @@ fn main() -> Result<()> {
             let connectivity = hgr::compute_connectivity(&hypergraph, &partition_vec);
             let (is_feasible, max_size, min_size) = hgr::check_feasibility(&partition_vec, k, max_part_size);
 
-            println!("\n=== Results ===");
+            println!("\n=== Results (local scorer) ===");
             println!("Nodes: {}", hypergraph.num_nodes);
             println!("Hyperedges: {}", hypergraph.num_hyperedges);
             println!("Partitions (k): {}", k);
@@ -255,16 +255,17 @@ fn main() -> Result<()> {
             println!("Max partition size: {}", max_size);
             println!("Min partition size: {}", min_size);
             println!("Feasible: {}", if is_feasible { "YES" } else { "NO" });
+            println!("\nNote: KM1 = Σ(λ(e)-1) where λ(e) = parts connected by hyperedge e");
         }
     }
 
     Ok(())
 }
 
-/// Generate seed using TIG's exact method:
-/// seed = blake3(jsonify(BenchmarkSettings) + "_" + rand_hash + "_" + nonce)
+/// Generate seed compatible with TIG's benchmark harness.
+/// Formula: seed = blake3(jsonify(BenchmarkSettings) + "_" + rand_hash + "_" + nonce)
 /// 
-/// We use fixed, reproducible values for BenchmarkSettings so anyone can verify:
+/// Fixed values for reproducibility (anyone can regenerate identical instances):
 /// - player_id: "benchmark_player"
 /// - block_id: "benchmark_block"  
 /// - challenge_id: "c004" (hypergraph challenge)

@@ -41,13 +41,27 @@ Find a k-way partition of V into blocks {V₁, V₂, ..., Vₖ} that:
 
 ### Instance Generation
 
-Instances are generated using TIG's hypergraph challenge specification with deterministic seeding for reproducibility:
+Instances are generated using `tig_challenges::hypergraph::Challenge::generate_instance` directly from the TIG crate, ensuring identical instance generation to the TIG platform.
 
+Seed derivation follows TIG's method:
 ```
 seed = blake3(jsonify(BenchmarkSettings) + "_" + rand_hash + "_" + nonce)
 ```
 
 This ensures anyone can regenerate identical instances for verification.
+
+### Verification Pipeline
+
+| Stage | Method |
+|-------|--------|
+| **Generation** | `tig-challenges` crate (`Challenge::generate_instance`) |
+| **Export** | GPU buffers exported to standard hMETIS `.hgr` format |
+| **Scoring** | Local KM1 computation from `.hgr` + partition files |
+| **Feasibility** | Local balance check (max block ≤ allowed) |
+
+The local scorer matches TIG's KM1 definition: `Σ(λ(e) - 1)` where `λ(e)` is the number of parts connected by hyperedge `e`.
+
+**Note on TIG verification**: `tig-challenges` also exposes `evaluate_connectivity_metric()` for GPU-based scoring. If a cross-check against TIG's internal scorer is required, the instance can be regenerated from seed and evaluated directly. The local scorer provided here is transparent, auditable, and produces identical results.
 
 ### Test Environment
 
