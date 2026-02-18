@@ -11,13 +11,14 @@ This repository provides a standalone benchmark harness for `sigma_freud_v5`, a 
 | Instance Size | Win Rate | Quality Improvement | Speedup |
 |---------------|----------|---------------------|---------|
 | 10,000 hyperedges | 70% (7-3) | +0.08% | 0.4x |
+| 20,000 hyperedges | 50% (5-5) | -0.56% | 0.6x |
 | 50,000 hyperedges | **80% (8-2)** | **+1.66%** | **2.4x faster** |
 | 100,000 hyperedges | **80% (8-2)** | **+1.54%** | **4.8x faster** |
 | 200,000 hyperedges | **100% (10-0)** | **+2.64%** | **8.9x faster** |
 
 *Quality improvement = mean reduction in connectivity (KM1 metric). Positive means sigma_freud produces better partitions.*
 
-**The algorithm's advantage grows with problem size**, achieving a perfect 10/10 win rate on 200k hyperedge instances with 2.64% better partition quality while running 8.9x faster than Mt-KaHyPar's highest quality preset.
+**The algorithm's advantage emerges at scale.** On smaller instances (10k-20k), Mt-KaHyPar is competitive or slightly better. At 50k+ hyperedges, sigma_freud consistently outperforms on both quality and speed, achieving a perfect 10/10 win rate on 200k instances with 2.64% better partition quality while running 8.9x faster.
 
 ## Problem Definition
 
@@ -241,7 +242,7 @@ To reproduce the benchmark results from this README:
 export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
 
 # Run complete benchmark suite
-for track in 10000 50000 100000 200000; do
+for track in 10000 20000 50000 100000 200000; do
     echo "=== Track: $track hyperedges ==="
     
     # Clean output directory before each run
