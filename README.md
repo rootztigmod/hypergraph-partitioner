@@ -210,6 +210,8 @@ Feasible: YES
 | 4 | 800 | High quality |
 | 5 | 1000 | Maximum quality |
 
+**Note:** The `--refinement` flag overrides effort-based defaults. Published benchmarks use `--refinement 2000`. For maximum quality, values up to 5000 can be used at the cost of increased runtime.
+
 ### `file` Command
 
 | Option | Description | Default |
