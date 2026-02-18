@@ -6,18 +6,18 @@ A high-performance CUDA-based hypergraph partitioner that achieves **state-of-th
 
 This repository provides a standalone benchmark harness for `sigma_freud_v5`, a GPU-accelerated hypergraph partitioning algorithm developed for [TIG (The Innovation Game)](https://github.com/tig-foundation/tig-monorepo). The algorithm consistently outperforms Mt-KaHyPar—the current state-of-the-art parallel hypergraph partitioner—on large instances (50k+ hyperedges).
 
-### Key Results
+### Key Results (vs Mt-KaHyPar `highest_quality` preset)
 
-| Instance Size | Win Rate | Quality Improvement | Speedup vs Mt-KaHyPar |
-|---------------|----------|--------------------|-----------------------|
-| 10,000 hyperedges | 50% (5-5) | -0.28%* | 0.3x |
-| 50,000 hyperedges | 60% (6-4) | **+0.41%** | 0.9x |
-| 100,000 hyperedges | **70% (7-3)** | **+1.70%** | **1.2x faster** |
-| 200,000 hyperedges | **100% (10-0)** | **+2.35%** | **1.6x faster** |
+| Instance Size | Win Rate | Quality Improvement | Speedup |
+|---------------|----------|---------------------|---------|
+| 10,000 hyperedges | 70% (7-3) | +0.08% | 0.4x |
+| 50,000 hyperedges | **80% (8-2)** | **+1.66%** | **2.4x faster** |
+| 100,000 hyperedges | **80% (8-2)** | **+1.54%** | **4.8x faster** |
+| 200,000 hyperedges | **100% (10-0)** | **+2.64%** | **8.9x faster** |
 
-*Quality improvement = reduction in connectivity (KM1 metric). Positive means sigma_freud produces better partitions.*
+*Quality improvement = mean reduction in connectivity (KM1 metric). Positive means sigma_freud produces better partitions.*
 
-**The algorithm's advantage grows with problem size**, achieving a perfect 10/10 win rate on 200k hyperedge instances with 2.35% better partition quality and 1.6x faster execution time.
+**The algorithm's advantage grows with problem size**, achieving a perfect 10/10 win rate on 200k hyperedge instances with 2.64% better partition quality while running 8.9x faster than Mt-KaHyPar's highest quality preset.
 
 ## Problem Definition
 
@@ -60,8 +60,8 @@ This ensures anyone can regenerate identical instances for verification.
 
 ### Comparison Setup
 
-- **sigma_freud_v5**: Single NVIDIA GPU, `effort=3` (600 refinement rounds)
-- **Mt-KaHyPar**: 16 CPU threads, `quality` preset, connectivity objective
+- **sigma_freud_v5**: Single NVIDIA GPU, `refinement=2000` (2000 refinement rounds)
+- **Mt-KaHyPar**: 16 CPU threads, `highest_quality` preset, connectivity objective
 
 Both solvers receive identical .hgr format hypergraphs and are measured on partition time only (excluding I/O).
 
@@ -251,52 +251,90 @@ export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
 for track in 10000 50000 100000 200000; do
     echo "=== Track: $track hyperedges ==="
     
-    # Generate and solve
+    # Generate and solve with refinement=2000
     ./target/release/hg_bench gen \
         --track $track \
         --nonces 10 \
         --out /tmp/bench_${track} \
-        --effort 3
+        --effort 3 \
+        --refinement 2000
     
-    # Compare against Mt-KaHyPar
+    # Compare against Mt-KaHyPar highest_quality preset
     python3 tools/compare_kahypar.py \
         "/tmp/bench_${track}/challenge_${track}_*.hgr" \
         --batch \
         --threads 16 \
-        --preset quality
+        --preset highest_quality
     
     echo ""
 done
 ```
 
-**Expected runtime:** ~10 minutes on RTX 5070 Ti + 16-thread CPU
+**Expected runtime:** ~45 minutes on RTX 5070 Ti + 16-thread CPU (Mt-KaHyPar `highest_quality` is compute-intensive)
 
 ## Algorithm Description
 
 sigma_freud_v5 is a GPU-accelerated hypergraph partitioner that combines multiple optimization techniques:
 
-### Phase 1: Initial Partitioning
-- **Hyperedge clustering**: Groups similar hyperedges to guide initial node placement
-- **Preference-based assignment**: Assigns nodes to partitions based on hyperedge connectivity patterns
+### Novel Contributions
 
-### Phase 2: Refinement
-- **GPU-parallel move computation**: Evaluates millions of potential node moves simultaneously
-- **Gain-based selection**: Prioritizes moves that reduce connectivity
-- **Tabu search**: Prevents cycling by temporarily forbidding recent moves
+#### 1. Dual Bitmask KM1 Gain Model
 
-### Phase 3: Iterated Local Search (ILS)
-- **Perturbation**: Escapes local optima by randomly relocating nodes
-- **Intensification**: Deep refinement around promising solutions
-- **Best-solution tracking**: Maintains the best partition found across iterations
+The core algorithmic innovation is a constant-time move gain computation for the KM1 (connectivity) objective using two precomputed bitmasks per hyperedge:
 
-### Phase 4: Balance Repair
-- **Overflow handling**: Moves nodes from overweight blocks
-- **Connectivity-aware**: Prefers moves that don't increase cut
+- **`edge_flags_all`**: Bitmask indicating which partitions have *any* node in this hyperedge
+- **`edge_flags_double`**: Bitmask indicating which partitions have *two or more* nodes in this hyperedge
 
-### Key Optimizations
-- **Coalesced GPU memory access**: Maximizes memory bandwidth utilization
-- **Warp-level primitives**: Uses CUDA warp shuffle for fast reductions
-- **Adaptive parameters**: Tunes refinement intensity based on instance characteristics
+This allows O(1) detection of whether moving a node will add or remove a partition label from an incident hyperedge—the exact quantity KM1 measures. Traditional implementations require iterating over hyperedge members to determine gain.
+
+#### 2. Capacity-Aware Move Selection with Per-Target Quotas
+
+Rather than greedily selecting top-gain moves (which tends to overfill attractive partitions), the solver enforces per-destination quotas derived from remaining balance slack:
+
+```
+quota[target] = max(1, remaining_capacity + phase_slack)
+```
+
+This systematically exploits the allowed imbalance budget (ε) while distributing improvements across partitions, preventing the common failure mode where high-gain moves concentrate in a few blocks and cause infeasibility.
+
+#### 3. Aspiration-Based Tabu Search
+
+The refinement loop maintains a tabu list to prevent cycling, but permits high-gain moves to override tabu status:
+
+```
+if node_tabu_until[node] <= round OR gain >= aspiration_threshold:
+    allow_move()
+```
+
+The aspiration threshold is set dynamically at 75% of the maximum observed gain per round. Additionally, failed move batches trigger secondary tabu marking to escape unproductive regions.
+
+#### 4. Deterministic GPU Pipeline
+
+The solver achieves full reproducibility through a hybrid architecture:
+- **Parallel scoring**: GPU evaluates all candidate moves simultaneously
+- **Serial commit**: Host sorts candidates and commits moves sequentially
+
+This avoids atomic race conditions in partition updates, ensuring identical results across runs—critical for benchmarking and verification.
+
+### Algorithm Phases
+
+#### Phase 1: Initial Partitioning
+- **Size-bucketed hyperedge clustering**: Groups hyperedges by size and hash signature to derive node-to-partition priors, emphasizing small-edge coherence
+- **Preference-based assignment**: Nodes assigned to partitions based on weighted voting from incident hyperedge clusters
+
+#### Phase 2: Refinement
+- **GPU-parallel move computation**: Evaluates millions of potential moves using the dual bitmask gain model
+- **Quota-constrained selection**: Distributes moves across partitions respecting capacity limits
+- **Adaptive move limits**: Move batch sizes vary by refinement phase (larger early, smaller late)
+
+#### Phase 3: Iterated Local Search (ILS)
+- **Controlled perturbation**: Escapes local optima by relocating a fraction of nodes
+- **Quick refinement**: Short refinement bursts after perturbation to evaluate new basins
+- **Best-solution tracking**: Maintains the globally best partition across all ILS iterations
+
+#### Phase 4: Balance Repair
+- **Overflow handling**: Moves nodes from overweight blocks prioritizing low-connectivity-impact moves
+- **Final polish**: Light refinement rounds to recover any quality lost during balance repair
 
 ## File Formats
 
