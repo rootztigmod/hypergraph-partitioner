@@ -242,12 +242,14 @@ export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
 for track in 10000 50000 100000 200000; do
     echo "=== Track: $track hyperedges ==="
     
+    # Clean output directory before each run
+    rm -rf /tmp/bench_${track}
+    
     # Generate and solve with refinement=2000
     ./target/release/hg_bench gen \
         --track $track \
         --nonces 10 \
         --out /tmp/bench_${track} \
-        --effort 3 \
         --refinement 2000
     
     # Compare against Mt-KaHyPar highest_quality preset
