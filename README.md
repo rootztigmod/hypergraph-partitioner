@@ -95,16 +95,7 @@ export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
 ### Installing Mt-KaHyPar (for comparison)
 
 ```bash
-# Ubuntu/Debian
-sudo apt-get install libboost-program-options-dev libhwloc-dev libtbb-dev
-
-# Build Mt-KaHyPar from source
-git clone https://github.com/kahypar/mt-kahypar.git
-cd mt-kahypar
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-sudo make install
+pip install mtkahypar
 ```
 
 ## Usage
@@ -217,7 +208,7 @@ Feasible: YES
 | 2 | 500 | Balanced (default) |
 | 3 | 600 | Quality focus |
 | 4 | 800 | High quality |
-| 5 | 1000 | Higher quality |
+| 5 | 1000 | Maximum quality |
 
 ### `file` Command
 
