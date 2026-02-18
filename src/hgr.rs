@@ -177,6 +177,33 @@ pub fn write_partition_with_timing(path: &Path, partition: &[u32], elapsed_secs:
     Ok(())
 }
 
+/// Validate partition for strict verification.
+/// Returns Ok(()) if valid, Err with description if invalid.
+pub fn validate_partition(partition: &[u32], num_nodes: u32, k: u32) -> Result<()> {
+    if partition.len() != num_nodes as usize {
+        return Err(anyhow!(
+            "Partition length mismatch: expected {} nodes, got {}",
+            num_nodes,
+            partition.len()
+        ));
+    }
+
+    for (i, &p) in partition.iter().enumerate() {
+        if p >= k {
+            return Err(anyhow!(
+                "Invalid partition label at node {}: {} (must be < {})",
+                i,
+                p,
+                k
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Compute KM1 connectivity metric.
+/// Assumes partition has been validated (correct length, valid labels).
 pub fn compute_connectivity(hypergraph: &Hypergraph, partition: &[u32]) -> u32 {
     let mut connectivity = 0u32;
 
@@ -186,9 +213,7 @@ pub fn compute_connectivity(hypergraph: &Hypergraph, partition: &[u32]) -> u32 {
 
         let mut parts_in_edge: HashSet<u32> = HashSet::new();
         for &node in &hypergraph.hyperedge_nodes[start..end] {
-            if (node as usize) < partition.len() {
-                parts_in_edge.insert(partition[node as usize]);
-            }
+            parts_in_edge.insert(partition[node as usize]);
         }
 
         if parts_in_edge.len() > 1 {
@@ -199,19 +224,20 @@ pub fn compute_connectivity(hypergraph: &Hypergraph, partition: &[u32]) -> u32 {
     connectivity
 }
 
-pub fn check_feasibility(partition: &[u32], k: u32, max_part_size: u32) -> (bool, u32, u32) {
+/// Check partition feasibility (balance constraint).
+/// Returns (is_feasible, max_size, min_size, num_empty_parts).
+pub fn check_feasibility(partition: &[u32], k: u32, max_part_size: u32) -> (bool, u32, u32, u32) {
     let mut part_sizes = vec![0u32; k as usize];
 
     for &p in partition {
-        if (p as usize) < part_sizes.len() {
-            part_sizes[p as usize] += 1;
-        }
+        part_sizes[p as usize] += 1;
     }
 
     let max_size = *part_sizes.iter().max().unwrap_or(&0);
     let min_size = *part_sizes.iter().min().unwrap_or(&0);
+    let num_empty = part_sizes.iter().filter(|&&s| s == 0).count() as u32;
 
-    let is_feasible = min_size >= 1 && max_size <= max_part_size;
+    let is_feasible = max_size <= max_part_size;
 
-    (is_feasible, max_size, min_size)
+    (is_feasible, max_size, min_size, num_empty)
 }

@@ -191,7 +191,7 @@ Partition any hypergraph in hMETIS .hgr format:
 
 **Output:**
 ```
-=== Results ===
+=== Results (local scorer) ===
 Nodes: 84137
 Hyperedges: 100000
 Partitions (k): 64
@@ -201,7 +201,16 @@ Connectivity (KM1): 141234
 Max partition size: 1355
 Min partition size: 1298
 Feasible: YES
+
+Note: KM1 = Σ(λ(e)-1) where λ(e) = parts connected by hyperedge e
 ```
+
+**Exit Codes (for CI/verification):**
+| Code | Meaning |
+|------|---------|
+| 0 | Valid and feasible partition |
+| 1 | Invalid input (wrong length, labels out of range) |
+| 2 | Valid but infeasible (balance constraint violated) |
 
 ## CLI Reference
 

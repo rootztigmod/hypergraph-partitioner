@@ -240,10 +240,16 @@ fn main() -> Result<()> {
             let hypergraph = hgr::read_hgr(&hgr)?;
             let partition_vec = hgr::read_partition(&partition)?;
 
+            // Strict validation (exit code 1 on invalid input)
+            if let Err(e) = hgr::validate_partition(&partition_vec, hypergraph.num_nodes, k) {
+                eprintln!("ERROR: Invalid partition - {}", e);
+                std::process::exit(1);
+            }
+
             let max_part_size = ((hypergraph.num_nodes as f64 / k as f64) * (1.0 + epsilon)).ceil() as u32;
 
             let connectivity = hgr::compute_connectivity(&hypergraph, &partition_vec);
-            let (is_feasible, max_size, min_size) = hgr::check_feasibility(&partition_vec, k, max_part_size);
+            let (is_feasible, max_size, min_size, num_empty) = hgr::check_feasibility(&partition_vec, k, max_part_size);
 
             println!("\n=== Results (local scorer) ===");
             println!("Nodes: {}", hypergraph.num_nodes);
@@ -254,8 +260,16 @@ fn main() -> Result<()> {
             println!("Connectivity (KM1): {}", connectivity);
             println!("Max partition size: {}", max_size);
             println!("Min partition size: {}", min_size);
+            if num_empty > 0 {
+                println!("Empty partitions: {}", num_empty);
+            }
             println!("Feasible: {}", if is_feasible { "YES" } else { "NO" });
             println!("\nNote: KM1 = Σ(λ(e)-1) where λ(e) = parts connected by hyperedge e");
+
+            // Exit code 2 if infeasible (but valid input)
+            if !is_feasible {
+                std::process::exit(2);
+            }
         }
     }
 
