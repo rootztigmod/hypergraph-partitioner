@@ -1,0 +1,2 @@
+cargo:rerun-if-changed=kernels/solver.cu
+cargo:rustc-env=OUT_DIR=/home/kevin/hypergraph-partitioner/target/release/build/hg_bench-20644966f4fa86db/out

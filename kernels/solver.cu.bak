@@ -1,0 +1,1305 @@
+#include <stdint.h>
+#include <cuda_runtime.h>
+
+extern "C" __global__ void reset_counters(int *num_valid_moves, int *moves_executed) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        *num_valid_moves = 0;
+        *moves_executed = 0;
+    }
+}
+
+extern "C" __global__ void hyperedge_clustering(
+    const int num_hyperedges,
+    const int num_clusters,
+    const int *hyperedge_offsets,
+    const int *hyperedge_nodes,
+    int *hyperedge_clusters
+) {
+    int hedge = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (hedge < num_hyperedges) {
+        int start = hyperedge_offsets[hedge];
+        int end = hyperedge_offsets[hedge + 1];
+        int hedge_size = end - start;
+
+        int quarter_clusters = num_clusters >> 2;
+        if (quarter_clusters <= 0) quarter_clusters = 1;
+
+        int bucket = (hedge_size > 8) ? 3 :
+                     (hedge_size > 4) ? 2 :
+                     (hedge_size > 2) ? 1 : 0;
+
+        int first = (hedge_size > 0) ? hyperedge_nodes[start] : hedge;
+        int last  = (hedge_size > 0) ? hyperedge_nodes[end - 1] : hedge;
+
+        unsigned int h = (unsigned int)first * 1103515245u
+                       + (unsigned int)last * 12345u
+                       + (unsigned int)hedge_size * 2654435761u
+                       + (unsigned int)hedge;
+
+        int cluster = bucket * quarter_clusters + (int)(h % (unsigned int)quarter_clusters);
+        hyperedge_clusters[hedge] = cluster;
+    }
+}
+
+extern "C" __global__ void compute_node_preferences(
+    const int num_nodes,
+    const int num_parts,
+    const int num_hedge_clusters,
+    const int *node_hyperedges,
+    const int *node_offsets,
+    const int *hyperedge_clusters,
+    const int *hyperedge_offsets,
+    int *pref_parts,
+    int *pref_priorities
+) {
+    int node = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (node < num_nodes) {
+        int start = node_offsets[node];
+        int end = node_offsets[node + 1];
+        int node_degree = end - start;
+
+        int cluster_votes[64];
+        int max_clusters = min(num_hedge_clusters, 64);
+        for (int i = 0; i < max_clusters; i++) cluster_votes[i] = 0;
+
+        int max_votes = 0;
+        int best_cluster = 0;
+
+        for (int j = start; j < end; j++) {
+            int hyperedge = node_hyperedges[j];
+            int cluster = hyperedge_clusters[hyperedge] % max_clusters;
+
+            if (cluster >= 0) {
+                int hedge_start = hyperedge_offsets[hyperedge];
+                int hedge_end = hyperedge_offsets[hyperedge + 1];
+                int hedge_size = hedge_end - hedge_start;
+                int weight = (hedge_size <= 2) ? 6 :
+                             (hedge_size <= 4) ? 4 :
+                             (hedge_size <= 8) ? 2 : 1;
+
+                cluster_votes[cluster] += weight;
+
+                if (cluster_votes[cluster] > max_votes ||
+                    (cluster_votes[cluster] == max_votes && cluster < best_cluster)) {
+                    max_votes = cluster_votes[cluster];
+                    best_cluster = cluster;
+                }
+            }
+        }
+
+        int base_part = 0;
+        if (num_parts > 0 && max_clusters > 0) {
+            base_part = (best_cluster * num_parts) / max_clusters;
+            if (base_part >= num_parts) base_part = num_parts - 1;
+        }
+
+        pref_parts[node] = base_part;
+        int degree_weight = node_degree > 255 ? 255 : node_degree;
+        int mv = max_votes > 32767 ? 32767 : max_votes;
+        pref_priorities[node] = (mv << 16) + (degree_weight << 8) + (num_parts - (node % num_parts));
+    }
+}
+
+extern "C" __global__ void execute_node_assignments(
+    const int num_nodes,
+    const int num_parts,
+    const int max_part_size,
+    const int *sorted_nodes,
+    const int *sorted_parts,
+    int *partition,
+    int *nodes_in_part
+) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        for (int i = 0; i < num_nodes; i++) {
+            int node = sorted_nodes[i];
+            int preferred_part = sorted_parts[i];
+
+            if (node >= 0 && node < num_nodes && preferred_part >= 0 && preferred_part < num_parts) {
+                int start_part = (i < num_parts) ? i : preferred_part;
+
+                bool assigned = false;
+                for (int attempt = 0; attempt < num_parts; attempt++) {
+                    int try_part = (start_part + attempt) % num_parts;
+                    if (nodes_in_part[try_part] < max_part_size) {
+                        partition[node] = try_part;
+                        nodes_in_part[try_part]++;
+                        assigned = true;
+                        break;
+                    }
+                }
+
+                if (!assigned) {
+                    int fallback_part = node % num_parts;
+                    partition[node] = fallback_part;
+                    nodes_in_part[fallback_part]++;
+                }
+            }
+        }
+    }
+}
+
+extern "C" __global__ void compute_refinement_moves(
+    const int num_nodes,
+    const int num_parts,
+    const int max_part_size,
+    const int *node_hyperedges,
+    const int *node_offsets,
+    const int *hyperedge_nodes,
+    const int *hyperedge_offsets,
+    const int *partition,
+    const int *nodes_in_part,
+    int *move_priorities,
+    int *num_valid_moves
+) {
+    __shared__ int shared_nodes_in_part[64];
+
+    if (threadIdx.x < 64 && threadIdx.x < num_parts) {
+        shared_nodes_in_part[threadIdx.x] = nodes_in_part[threadIdx.x];
+    }
+    __syncthreads();
+
+    int node = blockIdx.x * blockDim.x + threadIdx.x;
+    if (node >= num_nodes) return;
+
+    move_priorities[node] = 0;
+
+    int current_part = partition[node];
+    if ((unsigned)current_part >= (unsigned)num_parts) return;
+    if (shared_nodes_in_part[current_part] <= 1) return;
+
+    int start = node_offsets[node];
+    int end = node_offsets[node + 1];
+    int node_degree = end - start;
+
+    int used_degree = node_degree > 256 ? 256 : node_degree;
+    if (used_degree <= 0) return;
+
+    int degree_weight = node_degree > 255 ? 255 : node_degree;
+
+    unsigned long long full_mask = (num_parts >= 64) ? ~0ULL : ((1ULL << num_parts) - 1ULL);
+    unsigned long long current_bit = 1ULL << current_part;
+
+    unsigned short part_counts[64];
+    int np = (num_parts < 64) ? num_parts : 64;
+    for (int p = 0; p < np; p++) part_counts[p] = 0;
+
+    unsigned long long cand_mask = 0ULL;
+    int count_current_present = 0;
+
+    for (int j = 0; j < used_degree; j++) {
+        int rel = (int)(((long long)j * node_degree) / used_degree);
+        int hyperedge = node_hyperedges[start + rel];
+        int hedge_start = hyperedge_offsets[hyperedge];
+        int hedge_end = hyperedge_offsets[hyperedge + 1];
+
+        unsigned long long mask = 0ULL;
+
+        for (int k = hedge_start; k < hedge_end; k++) {
+            int other_node = hyperedge_nodes[k];
+            if (other_node != node && (unsigned)other_node < (unsigned)num_nodes) {
+                int part = partition[other_node];
+                if ((unsigned)part < (unsigned)num_parts) {
+                    mask |= 1ULL << part;
+                    if ((mask & full_mask) == full_mask) break;
+                }
+            }
+        }
+
+        if (mask & current_bit) count_current_present++;
+
+        unsigned long long flags = mask & ~current_bit;
+        while (flags) {
+            int bit = __ffsll(flags) - 1;
+            flags &= (flags - 1);
+            part_counts[bit]++;
+            cand_mask |= 1ULL << bit;
+        }
+    }
+
+    int best_gain = 0;
+    int best_target = current_part;
+
+    while (cand_mask) {
+        int target_part = __ffsll(cand_mask) - 1;
+        cand_mask &= (cand_mask - 1);
+
+        if ((unsigned)target_part >= (unsigned)num_parts) continue;
+        if (shared_nodes_in_part[target_part] >= max_part_size) continue;
+
+        int basic_gain = (int)part_counts[target_part] - count_current_present;
+
+        int current_size = shared_nodes_in_part[current_part];
+        int target_size = shared_nodes_in_part[target_part];
+        int balance_bonus = (current_size > target_size + 1) ? 4 : 0;
+
+        int total_gain = basic_gain + balance_bonus;
+
+        if (total_gain > best_gain ||
+            (total_gain == best_gain && target_part < best_target)) {
+            best_gain = total_gain;
+            best_target = target_part;
+        }
+    }
+
+    if (best_gain > 0 && best_target != current_part) {
+        int bg = best_gain > 32767 ? 32767 : best_gain;
+        move_priorities[node] =
+            (bg << 16) | (degree_weight << 8) | ((best_target & 63) | ((node & 3) << 6));
+        atomicAdd(num_valid_moves, 1);
+    }
+}
+
+extern "C" __global__ void execute_refinement_moves(
+    const int num_valid_moves,
+    const int *sorted_nodes,
+    const int *sorted_parts,
+    const int max_part_size,
+    int *partition,
+    int *nodes_in_part,
+    int *moves_executed
+) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        for (int i = 0; i < num_valid_moves; i++) {
+            int node = sorted_nodes[i];
+            int target_part = sorted_parts[i];
+
+            if (node >= 0 && target_part >= 0) {
+                int current_part = partition[node];
+
+                if (current_part >= 0 &&
+                    nodes_in_part[target_part] < max_part_size &&
+                    nodes_in_part[current_part] > 1 &&
+                    partition[node] == current_part) {
+
+                    partition[node] = target_part;
+                    nodes_in_part[current_part]--;
+                    nodes_in_part[target_part]++;
+                    (*moves_executed)++;
+                }
+            }
+        }
+    }
+}
+
+extern "C" __global__ void compute_refinement_moves_optimized(
+    const int num_nodes,
+    const int num_parts,
+    const int max_part_size,
+    const int *node_hyperedges,
+    const int *node_offsets,
+    const int *partition,
+    const int *nodes_in_part,
+    const unsigned long long *edge_flags_all,
+    const unsigned long long *edge_flags_double,
+    int *move_priorities,
+    int *num_valid_moves
+) {
+    __shared__ int shared_nodes_in_part[64];
+
+    if (threadIdx.x < 64 && threadIdx.x < num_parts) {
+        shared_nodes_in_part[threadIdx.x] = nodes_in_part[threadIdx.x];
+    }
+    __syncthreads();
+
+    int node = blockIdx.x * blockDim.x + threadIdx.x;
+    if (node >= num_nodes) return;
+
+    move_priorities[node] = 0;
+
+    int current_part = partition[node];
+    if ((unsigned)current_part >= (unsigned)num_parts) return;
+    if (shared_nodes_in_part[current_part] <= 1) return;
+
+    int start = node_offsets[node];
+    int end = node_offsets[node + 1];
+    int node_degree = end - start;
+
+    int used_degree = node_degree > 256 ? 256 : node_degree;
+    if (used_degree <= 0) return;
+
+    int degree_weight = node_degree > 255 ? 255 : node_degree;
+    unsigned long long current_bit = 1ULL << current_part;
+
+    unsigned short part_counts[64];
+    int np = (num_parts < 64) ? num_parts : 64;
+    for (int p = 0; p < np; p++) part_counts[p] = 0;
+
+    unsigned long long cand_mask = 0ULL;
+    int count_current_present = 0;
+
+    for (int j = 0; j < used_degree; j++) {
+        int rel = (int)(((long long)j * node_degree) / used_degree);
+        int hyperedge = node_hyperedges[start + rel];
+
+        unsigned long long flags_all = edge_flags_all[hyperedge];
+        unsigned long long flags_double = edge_flags_double[hyperedge];
+
+        unsigned long long mask = (flags_all & ~current_bit) | (flags_double & current_bit);
+
+        if (mask & current_bit) count_current_present++;
+
+        unsigned long long flags = mask & ~current_bit;
+        while (flags) {
+            int bit = __ffsll(flags) - 1;
+            flags &= (flags - 1);
+            part_counts[bit]++;
+            cand_mask |= 1ULL << bit;
+        }
+    }
+
+    int best_gain = 0;
+    int best_target = current_part;
+
+    while (cand_mask) {
+        int target_part = __ffsll(cand_mask) - 1;
+        cand_mask &= (cand_mask - 1);
+
+        if ((unsigned)target_part >= (unsigned)num_parts) continue;
+        if (shared_nodes_in_part[target_part] >= max_part_size) continue;
+
+        int basic_gain = (int)part_counts[target_part] - count_current_present;
+
+        int current_size = shared_nodes_in_part[current_part];
+        int target_size = shared_nodes_in_part[target_part];
+        int balance_bonus = (current_size > target_size + 1) ? 4 : 0;
+
+        int total_gain = basic_gain + balance_bonus;
+
+        if (total_gain > best_gain ||
+            (total_gain == best_gain && target_part < best_target)) {
+            best_gain = total_gain;
+            best_target = target_part;
+        }
+    }
+
+    if (best_gain > 0 && best_target != current_part) {
+        int bg = best_gain > 32767 ? 32767 : best_gain;
+        move_priorities[node] =
+            (bg << 16) | (degree_weight << 8) | ((best_target & 63) | ((node & 3) << 6));
+        atomicAdd(num_valid_moves, 1);
+    }
+}
+
+extern "C" __global__ void precompute_edge_flags(
+    const int num_hyperedges,
+    const int num_nodes,
+    const int *hyperedge_nodes,
+    const int *hyperedge_offsets,
+    const int *partition,
+    unsigned long long *edge_flags_all,
+    unsigned long long *edge_flags_double
+) {
+    int hedge = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (hedge < num_hyperedges) {
+        int start = hyperedge_offsets[hedge];
+        int end = hyperedge_offsets[hedge + 1];
+
+        unsigned long long flags_all = 0;
+        unsigned long long flags_double = 0;
+
+        for (int k = start; k < end; k++) {
+            int node = hyperedge_nodes[k];
+            if (node >= 0 && node < num_nodes) {
+                int part = partition[node];
+                if (part >= 0 && part < 64) {
+                    unsigned long long bit = 1ULL << part;
+                    flags_double |= (flags_all & bit);
+                    flags_all |= bit;
+                }
+            }
+        }
+
+        edge_flags_all[hedge] = flags_all;
+        edge_flags_double[hedge] = flags_double;
+    }
+}
+
+extern "C" __global__ void compute_connectivity(
+    const int num_hyperedges,
+    const int *hyperedge_nodes,
+    const int *hyperedge_offsets,
+    const int *partition,
+    int *connectivity
+) {
+    int hedge = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (hedge < num_hyperedges) {
+        int start = hyperedge_offsets[hedge];
+        int end = hyperedge_offsets[hedge + 1];
+
+        unsigned long long parts_mask = 0;
+
+        for (int k = start; k < end; k++) {
+            int node = hyperedge_nodes[k];
+            int part = partition[node];
+            if (part >= 0 && part < 64) {
+                parts_mask |= (1ULL << part);
+            }
+        }
+
+        int count = __popcll(parts_mask);
+        connectivity[hedge] = (count > 1) ? (count - 1) : 0;
+    }
+}
+
+extern "C" __global__ void perturb_solution(
+    const int num_nodes,
+    const int num_parts,
+    const int max_part_size,
+    const int perturb_strength,
+    int *partition,
+    int *nodes_in_part,
+    unsigned long long seed
+) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        unsigned long long state = seed;
+        int moves_made = 0;
+        int target_moves = (num_nodes * perturb_strength) / 100;
+
+        for (int attempt = 0; attempt < num_nodes && moves_made < target_moves; attempt++) {
+            state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+            int node = (int)(state % (unsigned long long)num_nodes);
+
+            int current_part = partition[node];
+            if (current_part < 0 || current_part >= num_parts) continue;
+            if (nodes_in_part[current_part] <= 1) continue;
+
+            state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+            int target_part = (int)(state % (unsigned long long)num_parts);
+
+            if (target_part != current_part &&
+                nodes_in_part[target_part] < max_part_size) {
+                partition[node] = target_part;
+                nodes_in_part[current_part]--;
+                nodes_in_part[target_part]++;
+                moves_made++;
+            }
+        }
+    }
+}
+
+extern "C" __global__ void perturb_solution_targeted(
+    const int num_nodes,
+    const int num_hyperedges,
+    const int num_parts,
+    const int max_part_size,
+    const int perturb_strength,
+    const int *hyperedge_nodes,
+    const int *hyperedge_offsets,
+    const int *connectivity,
+    int *partition,
+    int *nodes_in_part,
+    unsigned long long seed
+) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        unsigned long long state = seed;
+        int moves_made = 0;
+        int target_moves = (num_nodes * perturb_strength) / 100;
+
+        int *candidates = new int[num_nodes];
+        int candidate_count = 0;
+
+        for (int hedge = 0; hedge < num_hyperedges; hedge++) {
+            if (connectivity[hedge] > 2) {
+                int start = hyperedge_offsets[hedge];
+                int end = hyperedge_offsets[hedge + 1];
+                for (int k = start; k < end; k++) {
+                    int node = hyperedge_nodes[k];
+                    bool already_added = false;
+                    for (int c = 0; c < candidate_count; c++) {
+                        if (candidates[c] == node) {
+                            already_added = true;
+                            break;
+                        }
+                    }
+                    if (!already_added && candidate_count < num_nodes) {
+                        candidates[candidate_count++] = node;
+                    }
+                }
+            }
+        }
+
+        if (candidate_count == 0) {
+            for (int i = 0; i < num_nodes; i++) {
+                candidates[i] = i;
+            }
+            candidate_count = num_nodes;
+        }
+
+        for (int attempt = 0; attempt < candidate_count * 10 && moves_made < target_moves; attempt++) {
+            state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+            int idx = (int)(state % (unsigned long long)candidate_count);
+            int node = candidates[idx];
+
+            int current_part = partition[node];
+            if (current_part < 0 || current_part >= num_parts) continue;
+            if (nodes_in_part[current_part] <= 1) continue;
+
+            state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+            int target_part = (int)(state % (unsigned long long)num_parts);
+
+            if (target_part != current_part &&
+                nodes_in_part[target_part] < max_part_size) {
+                partition[node] = target_part;
+                nodes_in_part[current_part]--;
+                nodes_in_part[target_part]++;
+                moves_made++;
+            }
+        }
+
+        delete[] candidates;
+    }
+}
+
+extern "C" __global__ void balance_final(
+    const int num_nodes,
+    const int num_parts,
+    const int min_part_size,
+    const int max_part_size,
+    int *partition,
+    int *nodes_in_part
+) {
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        for (int part = 0; part < num_parts; part++) {
+            while (nodes_in_part[part] < min_part_size) {
+                bool moved = false;
+                for (int other_part = 0; other_part < num_parts && !moved; other_part++) {
+                    if (other_part != part && nodes_in_part[other_part] > min_part_size) {
+                        for (int node = 0; node < num_nodes; node++) {
+                            if (partition[node] == other_part) {
+                                partition[node] = part;
+                                nodes_in_part[other_part]--;
+                                nodes_in_part[part]++;
+                                moved = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!moved) break;
+            }
+        }
+
+        for (int part = 0; part < num_parts; part++) {
+            while (nodes_in_part[part] > max_part_size) {
+                bool moved = false;
+                for (int other_part = 0; other_part < num_parts && !moved; other_part++) {
+                    if (other_part != part && nodes_in_part[other_part] < max_part_size) {
+                        for (int node = 0; node < num_nodes; node++) {
+                            if (partition[node] == part) {
+                                partition[node] = other_part;
+                                nodes_in_part[part]--;
+                                nodes_in_part[other_part]++;
+                                moved = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!moved) break;
+            }
+        }
+    }
+}#include <curand_kernel.h>
+#include <stdint.h>
+#include <cuda_runtime.h>
+
+
+__device__ int select_level_based_on_weights(
+    const int num_levels, 
+    const float* level_weights, 
+    curandState* state
+)
+{
+    float total_weight = 0.0f;
+    for (int idx = 0; idx < num_levels; idx++)
+    {
+        total_weight += level_weights[idx];
+    }
+
+    float random_value = curand_uniform(state) * total_weight;
+    float cumulative = 0.0f;
+
+    for (int idx = 0; idx < num_levels; idx++)
+    {
+        cumulative += level_weights[idx];
+        if (random_value <= cumulative)
+        {
+            return idx;
+        }
+    }
+
+    return num_levels - 1;
+}
+
+__device__ void select_group(
+    const int level, 
+    const int num_nodes,
+    int *group,
+    int *num_groups,
+    curandState* state
+)
+{
+    *num_groups = 1 << level;  // 2^level
+    *group = curand(state) % *num_groups;
+}
+
+__device__ void get_group_bounds(
+    const int num_nodes, 
+    const int num_groups, 
+    const int group, 
+    int *start_idx, 
+    int *end_idx
+)
+{
+    int s = num_nodes / num_groups;
+    int r = num_nodes % num_groups;
+    if (group < r)
+    {
+        *start_idx = (s + 1) * group;
+        *end_idx = (s + 1) * (group + 1);
+    }
+    else
+    {
+        *start_idx = (s + 1) * r + s * (group - r);
+        *end_idx = (s + 1) * r + s * (group + 1 - r);
+    }
+}
+
+extern "C" __global__ void generate_hyperedge_sizes(
+    const uint8_t *seed,
+    const int num_hyperedges,
+    const uint min_hyperedge_size,
+    const uint max_hyperedge_size,
+    const float alpha,
+    int *hyperedge_sizes
+)
+{
+    for (int hyperedge_idx = threadIdx.x + blockIdx.x * blockDim.x; hyperedge_idx < num_hyperedges; hyperedge_idx += blockDim.x * gridDim.x) 
+    {   
+        curandState state;
+        curand_init(((uint64_t *)(seed))[0], hyperedge_idx, 0, &state);
+        
+        float y = curand_uniform(&state);
+
+        float c1 = powf((float)min_hyperedge_size, alpha);
+        float c2 = powf((float)max_hyperedge_size, alpha) - c1;
+        float x = powf(c2 * y + c1, 1.0f / alpha);
+
+        uint sample = (uint)floorf(x);
+        if (sample < min_hyperedge_size)
+        {
+            hyperedge_sizes[hyperedge_idx] = min_hyperedge_size;
+        }
+        else if (sample > max_hyperedge_size)
+        {
+            hyperedge_sizes[hyperedge_idx] = max_hyperedge_size;
+        }
+        else
+        {
+            hyperedge_sizes[hyperedge_idx] = sample;
+        }
+    }
+}
+
+extern "C" __global__ void generate_node_weights(
+    const uint8_t *seed,
+    const int num_nodes,
+    const float min_node_weight,
+    const float max_node_weight,
+    const float alpha,
+    float *node_weights
+)
+{    
+    for (int node_idx = threadIdx.x + blockIdx.x * blockDim.x; node_idx < num_nodes; node_idx += blockDim.x * gridDim.x) 
+    {
+        curandState state;
+        curand_init(((uint64_t *)(seed))[1], node_idx, 0, &state);
+     
+        float y = curand_uniform(&state);
+
+        float c1 = powf(min_node_weight, alpha);
+        float c2 = powf(max_node_weight, alpha) - c1;
+        float x = powf(c2 * y + c1, 1.0f / alpha);
+
+        float sample = floorf(x);
+        if (sample < min_node_weight)
+        {
+            node_weights[node_idx] = min_node_weight;
+        }
+        else if (sample > max_node_weight)
+        {
+            node_weights[node_idx] = max_node_weight;
+        }
+        else
+        {
+            node_weights[node_idx] = sample;
+        }
+    }
+}
+
+extern "C" __global__ void finalize_hyperedge_sizes(
+    const int num_hyperedges,
+    const int *hyperedge_sizes,
+    int *hyperedge_offsets,
+    uint *total_connections
+)
+{
+    hyperedge_offsets[0] = 0;
+    for (int idx = 0; idx < num_hyperedges; idx++)
+    {
+        hyperedge_offsets[idx+1] = hyperedge_offsets[idx] + hyperedge_sizes[idx];
+    }
+    *total_connections = hyperedge_offsets[num_hyperedges];
+}
+
+typedef struct
+{
+    int node_idx;
+    float key;
+} TrackedNode;
+
+__device__ void swap_nodes(TrackedNode *a, TrackedNode *b)
+{
+    TrackedNode temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+__device__ void swap_nodes(int *a, int *b)
+{
+    int temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+__device__ void heapify(TrackedNode *arr, const int idx, const int size)
+{
+    int smallest = idx;
+    int left = 2 * idx + 1;
+    int right = 2 * idx + 2;
+            
+    if (left < size && arr[left].key < arr[smallest].key)
+    {
+        smallest = left;
+    }
+            
+    if (right < size && arr[right].key < arr[smallest].key)
+    {
+        smallest = right;
+    }
+            
+    if (smallest != idx)
+    {
+        swap_nodes(&arr[idx], &arr[smallest]);
+        heapify(arr, smallest, size);
+    }
+}
+
+__device__ void heapify(int *arr, const int idx, const int size)
+{
+    int largest = idx;
+    int left = 2 * idx + 1;
+    int right = 2 * idx + 2;
+            
+    if (left < size && arr[left] > arr[largest])
+    {
+        largest = left;
+    }
+            
+    if (right < size && arr[right] > arr[largest])
+    {
+        largest = right;
+    }
+            
+    if (largest != idx)
+    {
+        swap_nodes(&arr[idx], &arr[largest]);
+        heapify(arr, largest, size);
+    }
+}
+
+__device__ void build_min_heap(TrackedNode *arr, const int size)
+{
+    for (int idx = size / 2 - 1; idx >= 0; idx--)
+    {
+        heapify(arr, idx, size);
+    }
+}
+
+__device__ int binary_search(
+    const int *arr,
+    const int size,
+    const int target
+)
+{
+    int left = 0;
+    int right = size - 1;
+
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+        if (arr[mid] == target) {
+            return mid;
+        } else if (arr[mid] < target) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+
+    return -1;
+}
+
+extern "C" __global__ void generate_hyperedges(
+    const uint8_t *seed,
+    const int num_nodes,
+    const int num_hyperedges,
+    const uint total_connections,
+    const int *hyperedge_sizes,
+    const int *hyperedge_offsets,
+    const float *node_weights,
+    const float *level_weights,
+    int *hyperedge_nodes,
+    int *node_degrees
+)
+{
+    for (int hyperedge_idx = threadIdx.x + blockIdx.x * blockDim.x; hyperedge_idx < num_hyperedges; hyperedge_idx += blockDim.x * gridDim.x) 
+    {
+        curandState state;
+        curand_init(((uint64_t *)(seed))[2], hyperedge_idx, 0, &state);
+
+        int hyperhyperedge_size = hyperedge_sizes[hyperedge_idx];
+        int hyperedge_offset = hyperedge_offsets[hyperedge_idx];
+
+        int num_levels = (int)log2f((float)num_nodes / hyperhyperedge_size) + 1;
+        int level = select_level_based_on_weights(num_levels, level_weights, &state);
+        
+        int group, num_groups;
+        select_group(level, num_nodes, &group, &num_groups, &state);
+        
+        int start_idx, end_idx;
+        get_group_bounds(num_nodes, num_groups, group, &start_idx, &end_idx);
+        
+        TrackedNode reservoir[2000];
+        int group_size = end_idx - start_idx;
+
+        if (hyperhyperedge_size < 16)
+        {
+            for (int idx = 0; idx < group_size; idx++)
+            {
+                int node_idx = start_idx + idx;
+                float weight = node_weights[node_idx];
+                float key = powf(curand_uniform(&state), 1.0f / weight);
+                
+                if (idx < hyperhyperedge_size)
+                {
+                    reservoir[idx].node_idx = node_idx;
+                    reservoir[idx].key = key;
+                }
+                else
+                {
+                    int min_idx = 0;
+                    float min_key = reservoir[0].key;
+                    
+                    for (int j = 1; j < hyperhyperedge_size; j++)
+                    {
+                        if (reservoir[j].key < min_key)
+                        {
+                            min_key = reservoir[j].key;
+                            min_idx = j;
+                        }
+                    }
+                    
+                    if (key > min_key)
+                    {
+                        reservoir[min_idx].node_idx = node_idx;
+                        reservoir[min_idx].key = key;
+                    }
+                }
+            }
+        }
+        else
+        {
+            for (int idx = 0; idx < hyperhyperedge_size; idx++)
+            {
+                int node_idx = start_idx + idx;
+                float weight = node_weights[node_idx];
+                float key = powf(curand_uniform(&state), 1.0f / weight);
+                    
+                reservoir[idx].node_idx = node_idx;
+                reservoir[idx].key = key;
+            }
+            
+            build_min_heap(reservoir, hyperhyperedge_size);
+            for (int idx = hyperhyperedge_size; idx < group_size; idx++)
+            {
+                int node_idx = start_idx + idx;
+                float weight = node_weights[node_idx];
+                float key = powf(curand_uniform(&state), 1.0f / weight);
+                
+                if (key > reservoir[0].key)
+                {
+                    reservoir[0].node_idx = node_idx;
+                    reservoir[0].key = key;
+                    
+                    heapify(reservoir, 0, hyperhyperedge_size);
+                }
+            }
+        }
+
+        // Sort nodes for this hyperedge
+        for (int idx = 0; idx < hyperhyperedge_size; idx++)
+        {
+            int node_idx = reservoir[idx].node_idx;
+            hyperedge_nodes[hyperedge_offset + idx] = node_idx;
+            atomicAdd(&node_degrees[node_idx], 1);
+        }
+        for (int i = hyperhyperedge_size / 2 - 1; i >= 0; i--)
+        {
+            heapify(&hyperedge_nodes[hyperedge_offset], i, hyperhyperedge_size);
+        }
+
+        for (int i = hyperhyperedge_size - 1; i > 0; i--) 
+        {
+            swap_nodes(&hyperedge_nodes[hyperedge_offset], &hyperedge_nodes[hyperedge_offset + i]);
+            heapify(&hyperedge_nodes[hyperedge_offset], 0, i);
+        }
+    }
+}
+
+
+extern "C" __global__ void finalize_hyperedges(
+    const int num_nodes,
+    const int num_hyperedges,
+    const int *hyperedge_sizes,
+    const int *hyperedge_offsets,
+    const int *hyperedge_nodes,
+    const int *node_degrees,
+    int *node_hyperedges,
+    int *node_offsets
+)
+{
+    // Compute prefix sum for offsets
+    int running_sum = 0;
+    for (int v = 0; v < num_nodes; v++) 
+    {
+        if (threadIdx.x == 0) {
+            node_offsets[v] = running_sum;
+        }
+        running_sum += node_degrees[v];
+    }
+    if (threadIdx.x == 0) {
+        node_offsets[num_nodes] = running_sum;
+    }
+    __syncthreads();
+    
+    for (int node_idx = threadIdx.x + blockIdx.x * blockDim.x; node_idx < num_nodes; node_idx += blockDim.x * gridDim.x) 
+    {
+        int offset = 0;
+        for (int hyperedge_idx = 0; hyperedge_idx < num_hyperedges; hyperedge_idx++)
+        {
+            int start = hyperedge_offsets[hyperedge_idx];
+            if (binary_search(&hyperedge_nodes[start], hyperedge_sizes[hyperedge_idx], node_idx) != -1)
+            {
+                int insert_pos = node_offsets[node_idx] + offset;
+                node_hyperedges[insert_pos] = hyperedge_idx;
+                offset++;
+            }
+        }
+    }
+}
+
+extern "C" __global__ void initialize_partitioning(
+    const int num_nodes,
+    const int *node_degrees,
+    int *partition,
+    int *sorted_nodes
+) 
+{
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        // Use level 1 as initial partition
+        int start, end;
+        get_group_bounds(num_nodes, 2, 1, &start, &end);
+        for (int idx = 0; idx < num_nodes; idx++) 
+        {
+            if (node_degrees[idx] == 0) {
+                partition[idx] = -1;
+            } else {
+                partition[idx] = idx < start ? 1 : 2;
+            }
+        }
+    }
+
+    // compare each vertex with all others to find its sort idx
+    for (int i = blockDim.x * blockIdx.x + threadIdx.x; i < num_nodes; i += blockDim.x * gridDim.x) {
+        int pos = 0;
+        for (int j = 0; j < num_nodes; j++) {
+            if (i == j) {
+                continue;
+            }
+            if (
+                node_degrees[i] < node_degrees[j] || 
+                (node_degrees[i] == node_degrees[j] && i > j)
+            ) {
+                pos++;
+            }
+        }
+        sorted_nodes[pos] = i;
+    }
+}
+
+extern "C" __global__ void greedy_bipartition(
+    const int level,
+    const int num_nodes,
+    const int num_hyperedges,
+    const int *node_hyperedges,
+    const int *node_offsets,
+    const int *sorted_nodes,
+    const int *node_degrees,
+    const int *curr_partition,
+    int *partition,
+    unsigned long long *left_hyperedge_flags,
+    unsigned long long *right_hyperedge_flags
+) {
+    int p = (1 << level) + blockIdx.x - 1;
+
+    __shared__ int count;
+    if (threadIdx.x == 0) {
+        count = 0;
+    }
+    __syncthreads();
+    for (int v = threadIdx.x; v < num_nodes; v += blockDim.x) {
+        if (curr_partition[v] == p) {
+            atomicAdd(&count, 1);
+        }
+    }
+    __syncthreads();
+    
+    if (count > 0) {
+        int size_left = count / 2;
+        int size_right = count - size_left;
+
+        __shared__ int left_count;
+        __shared__ int right_count;
+        __shared__ int connections_left;
+        __shared__ int connections_right;
+        if (threadIdx.x == 0) {
+            left_count = 0;
+            right_count = 0;
+        }
+        __syncthreads();
+
+        int num_flags = (num_hyperedges + 63) / 64;
+        unsigned long long *left_flags = left_hyperedge_flags + blockIdx.x * num_flags;
+        unsigned long long *right_flags = right_hyperedge_flags + blockIdx.x * num_flags;
+
+        for (int idx = 0; idx < num_nodes; idx++) {
+            int v = sorted_nodes[idx];
+            if (curr_partition[v] != p) continue;
+            
+            // Get range of hyperedges for this node
+            int start_pos = node_offsets[v];
+            int end_pos = node_offsets[v+1];
+
+            int left_child = p * 2 + 1;
+            int right_child = p * 2 + 2;
+
+            bool assign_left;
+            if (left_count >= size_left) {
+                assign_left = false;
+            } else if (right_count >= size_right) {
+                assign_left = true;
+            } else {
+                // Loop through this node's hyperedges
+                if (threadIdx.x == 0) {
+                    connections_left = 0;
+                    connections_right = 0;
+                }
+                __syncthreads();
+
+                for (int pos = start_pos + threadIdx.x; pos < end_pos; pos += blockDim.x) {
+                    int hyperedge_idx = node_hyperedges[pos];
+                    if (left_flags[hyperedge_idx / 64] & (1ULL << (hyperedge_idx % 64))) atomicAdd(&connections_left, 1);
+                    if (right_flags[hyperedge_idx / 64] & (1ULL << (hyperedge_idx % 64))) atomicAdd(&connections_right, 1);
+                }
+                __syncthreads();
+                if (connections_left == connections_right) {
+                    assign_left = left_count < right_count;
+                } else {
+                    assign_left = connections_left > connections_right;
+                }
+            }
+
+            if (threadIdx.x == 0) {
+                if (assign_left) {
+                    partition[v] = left_child;
+                    atomicAdd(&left_count, 1);
+                } else {
+                    partition[v] = right_child;
+                    atomicAdd(&right_count, 1);
+                }
+            }
+            unsigned long long *hyperedge_flags = assign_left ? left_flags : right_flags;
+            for (int e = start_pos + threadIdx.x; e < end_pos; e += blockDim.x) {
+                int hyperedge_idx = node_hyperedges[e];
+                atomicOr(&hyperedge_flags[hyperedge_idx / 64], 1ULL << (hyperedge_idx % 64));
+            }
+
+            __syncthreads();
+        }
+    }
+}
+
+extern "C" __global__ void finalize_bipartition(
+    const int num_nodes,
+    const int num_parts,
+    int *partition
+) {    
+    for (int v = threadIdx.x; v < num_nodes; v += blockDim.x) {
+        if (partition[v] != -1) {
+            partition[v] -= (num_parts - 1);
+        }
+    }
+}
+
+extern "C" __global__ void shuffle_nodes(
+    const uint8_t *seed,
+    const int num_nodes,
+    const int *partition,
+    const int *hyperedge_sizes,
+    const int *hyperedge_offsets,
+    const int *hyperedge_nodes,
+    const int *node_degrees,
+    const int *node_hyperedges,
+    const int *node_offsets,
+    const float *node_weights,
+    const int *sorted_nodes,
+    float *rand_weights,
+    int *shuffled_partition,
+    int *shuffled_hyperedge_nodes,
+    float *shuffled_node_weights,
+    int *shuffled_node_degrees,
+    uint *num_prune
+) {
+    curandState state;
+    curand_init(((uint64_t *)(seed))[3], 0, 0, &state);
+    for (int idx = 0; idx < num_nodes; idx++) {
+        rand_weights[idx] = curand_uniform(&state);
+    }
+
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        while (node_degrees[sorted_nodes[num_nodes - *num_prune - 1]] == 0) {
+            (*num_prune)++;
+        }
+    }
+
+    for (int node_idx = threadIdx.x + blockIdx.x * blockDim.x; node_idx < num_nodes; node_idx += blockDim.x * gridDim.x) {
+        if (node_degrees[node_idx] == 0) {
+            continue;
+        }
+
+        int pos = 0;
+        for (int j = 0; j < num_nodes; j++) {
+            if (node_idx == j || node_degrees[j] == 0) {
+                continue;
+            }
+            if (
+                (rand_weights[node_idx] > rand_weights[j]) || 
+                (rand_weights[node_idx] == rand_weights[j] && node_idx > j)
+            ) {
+                pos++;
+            }
+        }
+        shuffled_node_weights[pos] = node_weights[node_idx];
+        shuffled_partition[pos] = partition[node_idx];
+        shuffled_node_degrees[pos] = node_degrees[node_idx];
+        for (int i = 0; i < node_degrees[node_idx]; i++) {
+            int hyperedge_idx = node_hyperedges[node_offsets[node_idx] + i];
+            int offset = hyperedge_offsets[hyperedge_idx];
+            int pos2 = binary_search(&hyperedge_nodes[offset], hyperedge_sizes[hyperedge_idx], node_idx);
+            shuffled_hyperedge_nodes[offset + pos2] = pos;
+        }
+    }
+}
+
+extern "C" __global__ void finalize_shuffle(
+    const uint8_t *seed,
+    const int num_hyperedges,
+    const int *hyperedge_sizes,
+    const int *hyperedge_offsets,
+    int *shuffled_hyperedge_nodes
+) {
+    for (int hyperedge_idx = threadIdx.x + blockIdx.x * blockDim.x; hyperedge_idx < num_hyperedges; hyperedge_idx += blockDim.x * gridDim.x) {
+        int hyperedge_size = hyperedge_sizes[hyperedge_idx];
+        int hyperedge_offset = hyperedge_offsets[hyperedge_idx];
+
+        for (int i = hyperedge_size / 2 - 1; i >= 0; i--)
+        {
+            heapify(&shuffled_hyperedge_nodes[hyperedge_offset], i, hyperedge_size);
+        }
+
+        for (int i = hyperedge_size - 1; i > 0; i--) 
+        {
+            swap_nodes(&shuffled_hyperedge_nodes[hyperedge_offset], &shuffled_hyperedge_nodes[hyperedge_offset + i]);
+            heapify(&shuffled_hyperedge_nodes[hyperedge_offset], 0, i);
+        }
+    }
+}
+
+extern "C" __global__ void validate_partition(
+    const int num_nodes,
+    const int num_parts,
+    const int *partition,
+    unsigned int *errorflag
+) {
+    for (int node_idx = threadIdx.x; node_idx < num_nodes; node_idx += blockDim.x) {
+        int part = partition[node_idx];
+        
+        // Validate partition (redundant but keeping for safety)
+        if (part < 0 || part >= num_parts) {
+            atomicOr(errorflag, 1u);
+            return;
+        }
+    }
+}
+
+extern "C" __global__ void calc_connectivity_metric(
+    const int num_hyperedges,
+    const int *hyperedge_offsets,
+    const int *hyperedge_nodes,
+    const int *partition,
+    uint *connectivity_metric
+) {
+    for (int hyperedge_idx = threadIdx.x + blockIdx.x * blockDim.x; hyperedge_idx < num_hyperedges; hyperedge_idx += blockDim.x * gridDim.x) {
+        int start = hyperedge_offsets[hyperedge_idx];
+        int end = hyperedge_offsets[hyperedge_idx + 1];
+        
+        // Count unique parts for this hyperedge
+        uint64_t hyperedge_part_flags = 0;
+        for (int pos = start; pos < end; pos++) {
+            int node = hyperedge_nodes[pos];
+            int part = partition[node];
+            
+            hyperedge_part_flags |= (1ULL << part);
+        }
+        
+        // Add to connectivity sum
+        int connectivity = __popcll(hyperedge_part_flags);
+        atomicAdd(connectivity_metric, connectivity - 1);
+    }
+}
+
+extern "C" __global__ void count_nodes_in_part(
+    const int num_nodes,
+    const int num_parts,
+    const int *partition,
+    int *nodes_in_part
+) {
+    for (int node_idx = threadIdx.x + blockIdx.x * blockDim.x; node_idx < num_nodes; node_idx += blockDim.x * gridDim.x) {
+        int part = partition[node_idx];        
+        atomicAdd(&nodes_in_part[part], 1);
+    }
+}
