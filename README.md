@@ -269,45 +269,28 @@ done
 
 sigma_freud_v5 is a GPU-accelerated hypergraph partitioner that combines multiple optimization techniques:
 
-### Novel Contributions
-
-#### 1. Dual Bitmask KM1 Gain Model
+### Novel Contribution: Dual Bitmask KM1 Gain Model
 
 The core algorithmic innovation is a constant-time move gain computation for the KM1 (connectivity) objective using two precomputed bitmasks per hyperedge:
 
 - **`edge_flags_all`**: Bitmask indicating which partitions have *any* node in this hyperedge
 - **`edge_flags_double`**: Bitmask indicating which partitions have *two or more* nodes in this hyperedge
 
-This allows O(1) detection of whether moving a node will add or remove a partition label from an incident hyperedge—the exact quantity KM1 measures. Traditional implementations require iterating over hyperedge members to determine gain.
+This allows O(1) detection of whether moving a node will add or remove a partition label from an incident hyperedge—the exact quantity KM1 measures. Traditional FM-style implementations maintain gain tables updated incrementally, requiring iteration over hyperedge members. The bitmask approach is particularly well-suited to GPU execution where bitwise operations are cheap and memory access patterns can be coalesced.
 
-#### 2. Capacity-Aware Move Selection with Per-Target Quotas
+### Additional Techniques
 
-Rather than greedily selecting top-gain moves (which tends to overfill attractive partitions), the solver enforces per-destination quotas derived from remaining balance slack:
+#### Capacity-Aware Move Selection
 
-```
-quota[target] = max(1, remaining_capacity + phase_slack)
-```
+Rather than greedily selecting top-gain moves (which tends to overfill attractive partitions), the solver enforces per-destination quotas derived from remaining balance slack. This systematically exploits the allowed imbalance budget (ε) while distributing improvements across partitions.
 
-This systematically exploits the allowed imbalance budget (ε) while distributing improvements across partitions, preventing the common failure mode where high-gain moves concentrate in a few blocks and cause infeasibility.
+#### Tabu Search with Aspiration
 
-#### 3. Aspiration-Based Tabu Search
+The refinement loop uses tabu search to prevent cycling, with an aspiration criterion allowing high-gain moves to override tabu status. This is a standard metaheuristic technique adapted for GPU batch processing.
 
-The refinement loop maintains a tabu list to prevent cycling, but permits high-gain moves to override tabu status:
+#### Deterministic GPU Pipeline
 
-```
-if node_tabu_until[node] <= round OR gain >= aspiration_threshold:
-    allow_move()
-```
-
-The aspiration threshold is set dynamically at 75% of the maximum observed gain per round. Additionally, failed move batches trigger secondary tabu marking to escape unproductive regions.
-
-#### 4. Deterministic GPU Pipeline
-
-The solver achieves full reproducibility through a hybrid architecture:
-- **Parallel scoring**: GPU evaluates all candidate moves simultaneously
-- **Serial commit**: Host sorts candidates and commits moves sequentially
-
-This avoids atomic race conditions in partition updates, ensuring identical results across runs—critical for benchmarking and verification.
+The solver achieves full reproducibility through parallel scoring on GPU followed by serial commit on host. This avoids atomic race conditions and ensures identical results across runs.
 
 ### Algorithm Phases
 
