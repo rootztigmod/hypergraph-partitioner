@@ -48,9 +48,19 @@ seed = blake3(jsonify(BenchmarkSettings) + "_" + rand_hash + "_" + nonce)
 
 This ensures anyone can regenerate identical instances for verification.
 
+### Test Environment
+
+| Component | Specification |
+|-----------|---------------|
+| **GPU** | NVIDIA RTX 5070 Ti Laptop (12GB VRAM) |
+| **CPU** | Intel Core i9 (16 threads used for Mt-KaHyPar) |
+| **OS** | Ubuntu 24.04 (WSL2) |
+| **CUDA** | 12.0 |
+| **Rust** | 1.90.0 |
+
 ### Comparison Setup
 
-- **sigma_freud_v5**: Single NVIDIA GPU (RTX 5070 Ti Laptop, 12GB VRAM)
+- **sigma_freud_v5**: Single NVIDIA GPU
 - **Mt-KaHyPar**: 16 CPU threads, `quality` preset, connectivity objective
 
 Both solvers receive identical .hgr format hypergraphs and are measured on partition time only (excluding I/O).
@@ -61,6 +71,7 @@ Both solvers receive identical .hgr format hypergraphs and are measured on parti
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
+| NVIDIA GPU | Turing+ (RTX 20 series or newer) | Compiled for `sm_75` architecture |
 | CUDA Toolkit | 12.0+ | For GPU acceleration |
 | Rust | 1.70+ | Build toolchain |
 | Python | 3.8+ | Comparison scripts |
@@ -206,7 +217,7 @@ Feasible: YES
 | 2 | 500 | Balanced (default) |
 | 3 | 600 | Quality focus |
 | 4 | 800 | High quality |
-| 5 | 1000 | Extreme quality |
+| 5 | 1000 | Maximum quality |
 
 ### `file` Command
 
@@ -321,7 +332,7 @@ One line per node, containing the block ID (0 to k-1):
 
 ## Limitations
 
-- Requires NVIDIA GPU with CUDA support
+- Requires NVIDIA GPU (Turing architecture or newer: RTX 20/30/40/50 series, GTX 16 series)
 - Optimized for k=64 partitions (TIG challenge specification)
 - Best performance on instances with 50k+ hyperedges
 - Single-GPU implementation (no multi-GPU support)
