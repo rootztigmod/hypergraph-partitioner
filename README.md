@@ -53,7 +53,7 @@ This ensures anyone can regenerate identical instances for verification.
 | Component | Specification |
 |-----------|---------------|
 | **GPU** | NVIDIA RTX 5070 Ti Laptop (12GB VRAM) |
-| **CPU** | Intel Core i9 (16 threads used for Mt-KaHyPar) |
+| **CPU** | Intel Core Ultra 9 275HX (24 cores, 16 threads used for Mt-KaHyPar) |
 | **OS** | Ubuntu 24.04 (WSL2) |
 | **CUDA** | 12.0 |
 | **Rust** | 1.90.0 |
