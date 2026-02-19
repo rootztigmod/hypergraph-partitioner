@@ -10,30 +10,9 @@ fn main() {
     
     println!("cargo:rerun-if-changed={}", kernel_path);
     
-    // Detect GPU architecture or use environment variable, default to sm_89
-    // Note: sm_120 (Blackwell) requires CUDA 12.8+, so we cap at sm_89 for compatibility
-    let arch = env::var("CUDA_ARCH").unwrap_or_else(|_| {
-        if let Ok(output) = Command::new("nvidia-smi")
-            .args(["--query-gpu=compute_cap", "--format=csv,noheader"])
-            .output()
-        {
-            if output.status.success() {
-                let cap = String::from_utf8_lossy(&output.stdout);
-                let cap = cap.trim().lines().next().unwrap_or("8.9");
-                let major_minor: Vec<&str> = cap.split('.').collect();
-                if major_minor.len() == 2 {
-                    let major: u32 = major_minor[0].parse().unwrap_or(8);
-                    let minor: u32 = major_minor[1].parse().unwrap_or(9);
-                    // Cap at sm_89 (Ada) for CUDA 12.0-12.7 compatibility
-                    if major > 8 || (major == 8 && minor > 9) {
-                        return "sm_89".to_string();
-                    }
-                    return format!("sm_{}{}", major, minor);
-                }
-            }
-        }
-        "sm_89".to_string()
-    });
+    // Use sm_75 (Turing) for broad compatibility across RTX 20/30/40/50 series.
+    // Override with CUDA_ARCH environment variable if needed.
+    let arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_75".to_string());
     
     println!("cargo:warning=Compiling CUDA kernels for {}", arch);
     

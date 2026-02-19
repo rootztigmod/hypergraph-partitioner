@@ -159,7 +159,113 @@ echo "0" > /tmp/bad.txt
 # Exit code: 1
 ```
 
-## Usage
+## Standalone Tools
+
+For verification and reproducibility, the pipeline is split into standalone components that can be audited independently.
+
+### 1. Generate Instances (`gen_hgr`)
+
+Generate TIG hypergraph instances as .hgr files:
+
+```bash
+# gen_hgr <size> <output_folder> [-n <count>] [-s <seed>]
+./target/release/gen_hgr 100000 /tmp/instances -n 10 -s 0
+```
+
+**Output files:** `<size>_<seed_hex>_<i>.hgr` (e.g., `100000_a1b2c3d4_0.hgr`)
+
+### 2. Run sigma_freud (`run_sigma_freud`)
+
+Solve a folder of .hgr files:
+
+```bash
+# run_sigma_freud <hgr_folder> <output_folder> [-k <partitions>] [-e <epsilon>] [-r <refinement>]
+./target/release/run_sigma_freud /tmp/instances /tmp/sigma -k 64 -e 0.03 -r 2000
+```
+
+**Output files:** Same name as input, `.partition` extension (e.g., `100000_a1b2c3d4_0.partition`)
+
+### 3. Run Mt-KaHyPar (`run_kahypar.py`)
+
+Solve the same instances with Mt-KaHyPar:
+
+```bash
+# run_kahypar.py <hgr_folder> <output_folder> [-k <partitions>] [-e <epsilon>] [-t <threads>] [-p <preset>]
+python3 tools/run_kahypar.py /tmp/instances /tmp/kahypar -t 16 -p highest_quality
+```
+
+**Output files:** Same name as input, `.partition` extension
+
+### 4. Evaluate Partitions (`eval_partitions.py`)
+
+Compute KM1 connectivity for any partition folder:
+
+```bash
+# eval_partitions.py <hgr_folder> <partition_folder> [-k <partitions>] [-e <epsilon>] [-v]
+python3 tools/eval_partitions.py /tmp/instances /tmp/sigma -v
+```
+
+### 5. Compare Results (`compare_results.py`)
+
+Compare sigma_freud and Mt-KaHyPar results side-by-side:
+
+```bash
+# compare_results.py <hgr_folder> <sigma_folder> <kahypar_folder>
+python3 tools/compare_results.py /tmp/instances /tmp/sigma /tmp/kahypar
+```
+
+**Output:**
+```
+==========================================================================================
+COMPARISON: sigma_freud vs Mt-KaHyPar
+==========================================================================================
+Instance                          sigma KM1  kahypar KM1     winner        gap
+------------------------------------------------------------------------------------------
+100000_a1b2c3d4_0                    14523        14891      sigma     -2.47%
+...
+
+SUMMARY
+  Instances: 10
+  sigma_freud wins: 8/10
+  Average gap: -1.57% (negative = sigma better)
+  Speedup: 4.9x
+```
+
+### 6. Benchmark Scripts
+
+Convenience scripts that run the full pipeline for each instance size:
+
+```bash
+# Make scripts executable
+chmod +x bench_*.sh
+
+# Run a specific size (default: 10 instances)
+./bench_100000.sh
+
+# Run with custom settings: <n_instances> <refinement> <threads>
+./bench_100000.sh 20 3000 16
+
+# Run all sizes
+./bench_all.sh 10 2000 16
+```
+
+Each `bench_<size>.sh` script:
+1. Generates instances with `gen_hgr`
+2. Solves with `run_sigma_freud`
+3. Solves with `run_kahypar.py`
+4. Evaluates both sets of partitions
+5. Prints comparative results
+
+This allows third parties to:
+- Generate identical instances from the same seeds
+- Run either solver independently
+- Verify KM1 scores with simple, auditable Python code
+
+---
+
+## Usage (Combined Tool)
+
+The `hg_bench` binary combines all functionality for convenience:
 
 ### Command Overview
 
