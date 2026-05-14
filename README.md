@@ -474,10 +474,6 @@ Sigma Freud V9 is a CUDA/Rust implementation of a deterministic capacity-aware m
 
 The implementation should not be read as claiming that hypergraph partitioning, GPU execution, FM-style refinement, tabu search, ILS, recombination, or swap moves are individually new. Those are known techniques. The claimed contribution is the specific method composition used here: compact dual-mask KM1 gain estimation, quota-bounded deterministic move replay, balance-preserving exchange refinement, and hyperedge-guided perturbation, combined in a pipeline tuned for the TIG k=64 balanced KM1 objective.
 
-### Candidate Advance Method: Deterministic Hyperedge-Consensus and Quota-Replayed Refinement
-
-The method combines compact dual-bitmask KM1 gain estimation, deterministic quota-bounded move selection and host replay, balance-preserving swap and cycle refinement, hyperedge-guided perturbation, and deterministic consensus/relinking against retained high-quality partitions or best-known assignments. The CUDA/Rust code in this repository is one implementation of that method, with track-specific parameterisation for different TIG instance sizes.
-
 ### Component: Dual Bitmask KM1 Gain Model
 
 One core implementation component is a constant-time move gain computation for the KM1 (connectivity) objective using two precomputed bitmasks per hyperedge:
