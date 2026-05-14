@@ -600,8 +600,6 @@ The following prior work informed the design of Sigma Freud:
 
 - **Wu et al. — "gHyPart: GPU-friendly End-to-End Hypergraph Partitioner"**: demonstrates that GPU hypergraph partitioning is known prior art. Sigma Freud does not claim novelty merely from executing hypergraph partitioning on a GPU.
 
-The claimed novelty is not that hypergraph partitioning, FM-style refinement, tabu search, ILS, recombination, swap moves, or GPU execution are individually new. The claimed novelty is the specific combination and sequencing used here: compact dual-mask KM1 gain estimation, deterministic quota-bounded move replay, balance-preserving exchange refinement, and hyperedge-guided perturbation applied to the TIG balanced k-way KM1 objective.
-
 ## Acknowledgments
 
 - [TIG Foundation](https://github.com/tig-foundation) for the hypergraph challenge specification
