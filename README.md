@@ -1,10 +1,10 @@
-# Sigma Freud V8: GPU-Accelerated Hypergraph Partitioner
+# Sigma Freud V9: GPU-Accelerated Hypergraph Partitioner
 
 A CUDA/Rust hypergraph partitioner that achieves lower KM1 connectivity than Mt-KaHyPar `highest_quality` on the tested TIG-style benchmark instances, while showing increasingly strong runtime scaling on larger tracks.
 
 ## Overview
 
-This repository provides a standalone benchmark harness for Sigma Freud V8, a CUDA/Rust implementation of a GPU-accelerated hypergraph partitioning method developed for [TIG (The Innovation Game)](https://github.com/tig-foundation/tig-monorepo). The current harness uses the solver from `tig-algorithms/src/hypergraph/test`, with the same TIG challenge generation and local KM1 verification pipeline used for comparison against Mt-KaHyPar.
+This repository provides a standalone benchmark harness for Sigma Freud V9, a CUDA/Rust implementation of a GPU-accelerated hypergraph partitioning method developed for [TIG (The Innovation Game)](https://github.com/tig-foundation/tig-monorepo). The current harness uses the solver from `tig-algorithms/src/hypergraph/test`, with the same TIG challenge generation and local KM1 verification pipeline used for comparison against Mt-KaHyPar.
 
 The benchmark claims in this README are specific to the TIG-style generated hypergraph instances and protocol described below. They should not be read as universal state-of-the-art claims across all public hypergraph partitioning benchmark suites.
 
@@ -105,7 +105,7 @@ The local scorer matches TIG's KM1 definition: `Σ(λ(e) - 1)` where `λ(e)` is 
 
 ### Comparison Setup
 
-- **Sigma Freud V8**: Single NVIDIA GPU, default per-track refinement from the Rust track files
+- **Sigma Freud V9**: Single NVIDIA GPU, default per-track refinement from the Rust track files
 - **Mt-KaHyPar**: 16 CPU threads, `highest_quality` preset, connectivity objective
 
 Both solvers receive identical .hgr format hypergraphs and are measured on partition time only (excluding I/O).
@@ -484,7 +484,7 @@ Do not pass `--refinement` if you want the solver to use the defaults embedded i
 
 ## Algorithm Description
 
-Sigma Freud V8 is a CUDA/Rust implementation of a deterministic capacity-aware method for balanced k-way hypergraph partitioning under the KM1/connectivity objective.
+Sigma Freud V9 is a CUDA/Rust implementation of a deterministic capacity-aware method for balanced k-way hypergraph partitioning under the KM1/connectivity objective.
 
 The implementation should not be read as claiming that hypergraph partitioning, GPU execution, FM-style refinement, tabu search, ILS, recombination, or swap moves are individually new. Those are known techniques. The claimed contribution is the specific method composition used here: compact dual-mask KM1 gain estimation, quota-bounded deterministic move replay, balance-preserving exchange refinement, and hyperedge-guided perturbation, combined in a pipeline tuned for the TIG k=64 balanced KM1 objective.
 
@@ -592,9 +592,9 @@ One line per node, containing the block ID (0 to k-1):
 If you use this work in academic research, please cite:
 
 ```
-@software{sigma_freud_v8,
+@software{sigma_freud_v9,
   author = {rootztigmod},
-  title = {Sigma Freud V8: GPU-Accelerated Hypergraph Partitioner},
+  title = {Sigma Freud V9: GPU-Accelerated Hypergraph Partitioner},
   year = {2026},
   url = {https://github.com/rootztigmod/hypergraph-partitioner}
 }
