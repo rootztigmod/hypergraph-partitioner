@@ -67,6 +67,10 @@ enum Commands {
         /// Refinement rounds (overrides effort-based default if specified)
         #[arg(long)]
         refinement: Option<u32>,
+
+        /// Solver mode. Only tig is supported by the current replacement solver.
+        #[arg(long, default_value = "tig")]
+        mode: String,
     },
 
     /// Verify a partition and compute metrics
@@ -195,10 +199,14 @@ fn main() -> Result<()> {
             epsilon,
             effort,
             refinement,
+            mode,
         } => {
             println!("Solving: {}", hgr.display());
             println!("Output: {}", out.display());
-            println!("k={}, epsilon={}, effort={}, refinement={:?}", k, epsilon, effort, refinement);
+            println!("k={}, epsilon={}, effort={}, refinement={:?}, mode={}", k, epsilon, effort, refinement, mode);
+            if mode != "tig" {
+                anyhow::bail!("unsupported solver mode '{mode}'; the replacement solver only supports --mode tig");
+            }
 
             let hypergraph = hgr::read_hgr(&hgr)?;
             println!(
@@ -210,13 +218,7 @@ fn main() -> Result<()> {
             println!("Max partition size: {}", max_part_size);
 
             let start = Instant::now();
-            let partition = solver::solve(
-                &hypergraph,
-                k,
-                max_part_size,
-                effort,
-                refinement,
-            )?;
+            let partition = solver::solve(&hypergraph, k, max_part_size, effort, refinement)?;
             let elapsed = start.elapsed().as_secs_f64();
 
             hgr::write_partition(&out, &partition)?;

@@ -1,24 +1,54 @@
-# sigma_freud: GPU-Accelerated Hypergraph Partitioner
+# Sigma Freud V8: GPU-Accelerated Hypergraph Partitioner
 
-A high-performance CUDA-based hypergraph partitioner that achieves **state-of-the-art partition quality** on large-scale instances while maintaining competitive runtime performance.
+A CUDA/Rust hypergraph partitioner that achieves lower KM1 connectivity than Mt-KaHyPar `highest_quality` on the tested TIG-style benchmark instances, while showing increasingly strong runtime scaling on larger tracks.
 
 ## Overview
 
-This repository provides a standalone benchmark harness for `sigma_freud_v6`, a GPU-accelerated hypergraph partitioning algorithm developed for [TIG (The Innovation Game)](https://github.com/tig-foundation/tig-monorepo). The algorithm consistently outperforms Mt-KaHyPar—the current state-of-the-art parallel hypergraph partitioner—on all instance sizes, winning across all 5 tracks.
+This repository provides a standalone benchmark harness for Sigma Freud V8, a CUDA/Rust implementation of a GPU-accelerated hypergraph partitioning method developed for [TIG (The Innovation Game)](https://github.com/tig-foundation/tig-monorepo). The current harness uses the solver from `tig-algorithms/src/hypergraph/test`, with the same TIG challenge generation and local KM1 verification pipeline used for comparison against Mt-KaHyPar.
+
+The benchmark claims in this README are specific to the TIG-style generated hypergraph instances and protocol described below. They should not be read as universal state-of-the-art claims across all public hypergraph partitioning benchmark suites.
+
+## Advance Evidence Method
+
+The candidate Advance method is **Deterministic Hyperedge-Consensus and Quota-Replayed Refinement for Balanced k-Way Hypergraph Partitioning**.
+
+The submitted method is an abstract algorithmic method for balanced k-way hypergraph partitioning. It combines:
+
+1. compact dual-bitmask KM1 gain estimation;
+2. deterministic quota-bounded move selection and host replay;
+3. balance-preserving swap and cycle refinement;
+4. hyperedge-guided perturbation;
+5. deterministic consensus/relinking against retained high-quality partitions or best-known assignments.
+
+The CUDA/Rust implementation in this repository is one embodiment of that method, with track-specific parameterisation for different TIG instance sizes.
 
 ### Key Results (vs Mt-KaHyPar `highest_quality` preset)
 
+Latest default-refinement results on 10 instances per measured track:
+
 | Instance Size | Win Rate | Quality Improvement | Speedup |
 |---------------|----------|---------------------|---------|
-| 10,000 hyperedges | **80% (8-1-1)** | **+0.83%** | 0.3x |
-| 20,000 hyperedges | 50% (5-5) | **~0.00%** | 0.8x |
-| 50,000 hyperedges | **90% (9-1)** | **+2.33%** | **2.1x faster** |
-| 100,000 hyperedges | **90% (9-1)** | **+2.27%** | **4.5x faster** |
-| 200,000 hyperedges | **100% (10-0)** | **+3.01%** | **8.6x faster** |
+| 10,000 hyperedges | **100% (10-0)** | **+2.37%** | 0.05x speedup (Mt-KaHyPar faster) |
+| 20,000 hyperedges | **100% (10-0)** | **+1.53%** | 0.9x speedup (near parity) |
+| 50,000 hyperedges | **100% (10-0)** | **+3.79%** | **1.9x faster** |
+| 100,000 hyperedges | **100% (10-0)** | **+3.64%** | **3.3x faster** |
+| 200,000 hyperedges | **100% (10-0)** | **+4.52%** | **5.9x faster** |
 
-*Quality improvement = mean reduction in connectivity (KM1 metric). Positive means sigma_freud produces better partitions.*
+*Quality improvement = mean reduction in connectivity (KM1 metric). Positive means Sigma Freud produces better partitions. Speedup is calculated against Mt-KaHyPar partition time; values below 1.0x mean Mt-KaHyPar is faster.*
 
-**The algorithm wins across all instance sizes.** On 10k-20k instances, sigma_freud is competitive or better. At 50k+ hyperedges, sigma_freud consistently dominates on both quality and speed, achieving a perfect 10/10 win rate on 200k instances with 3.01% better partition quality while running 8.6x faster.
+**The latest recorded benchmark summary shows Sigma Freud at 50/50 quality wins against Mt-KaHyPar `highest_quality` across all TIG hypergraph tracks.** Full raw logs should be retained with any evidence package for auditability. The 10k and 20k tracks are quality wins with slower or near-parity runtime. At 50k and above, Sigma Freud wins on both quality and speed, reaching a 5.9x speedup on 200k.
+
+Raw logs for each track should be stored under `results/raw_logs/` or an equivalent audit directory when this repository is used as an evidence package.
+
+### Aggregate Results
+
+| Metric | Result |
+|--------|--------|
+| Total tested instances | 50 |
+| Record vs Mt-KaHyPar `highest_quality` | 50 wins / 0 ties / 0 losses |
+| Feasible Sigma Freud partitions | 50 / 50 |
+| Objective | KM1 / connectivity |
+| Balance constraint | k = 64, epsilon = 0.03 |
 
 ## Problem Definition
 
@@ -68,14 +98,14 @@ The local scorer matches TIG's KM1 definition: `Σ(λ(e) - 1)` where `λ(e)` is 
 | Component | Specification |
 |-----------|---------------|
 | **GPU** | NVIDIA RTX 5070 Ti Laptop (12GB VRAM) |
-| **CPU** | Intel Core Ultra 9 275HX (24 cores, 16 threads used for Mt-KaHyPar) |
+| **CPU** | Intel Core Ultra 9 275HX; Mt-KaHyPar invoked with `--threads 16` |
 | **OS** | Ubuntu 24.04 (WSL2) |
 | **CUDA** | 12.0 |
 | **Rust** | 1.90.0 |
 
 ### Comparison Setup
 
-- **sigma_freud_v6**: Single NVIDIA GPU, `refinement=2000` (2000 refinement rounds)
+- **Sigma Freud V8**: Single NVIDIA GPU, default per-track refinement from the Rust track files
 - **Mt-KaHyPar**: 16 CPU threads, `highest_quality` preset, connectivity objective
 
 Both solvers receive identical .hgr format hypergraphs and are measured on partition time only (excluding I/O).
@@ -111,6 +141,16 @@ export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
 
 ```bash
 pip install mtkahypar
+```
+
+Record the installed Mt-KaHyPar package details alongside benchmark logs:
+
+```bash
+pip show mtkahypar
+python3 - <<'PY'
+import mtkahypar
+print(mtkahypar.__version__ if hasattr(mtkahypar, "__version__") else mtkahypar)
+PY
 ```
 
 ## Scoring / Validation
@@ -174,7 +214,7 @@ Generate TIG hypergraph instances as .hgr files:
 
 **Output files:** `<size>_<seed_hex>_<i>.hgr` (e.g., `100000_a1b2c3d4_0.hgr`)
 
-### 2. Run sigma_freud (`run_sigma_freud`)
+### 2. Run Sigma Freud (`run_sigma_freud`)
 
 Solve a folder of .hgr files:
 
@@ -184,6 +224,8 @@ Solve a folder of .hgr files:
 ```
 
 **Output files:** Same name as input, `.partition` extension (e.g., `100000_a1b2c3d4_0.partition`)
+
+For default per-track refinement, prefer `hg_bench gen` without `--refinement`. The `run_sigma_freud` helper currently accepts `-r` and passes it as an explicit refinement override.
 
 ### 3. Run Mt-KaHyPar (`run_kahypar.py`)
 
@@ -217,7 +259,7 @@ python3 tools/compare_results.py /tmp/instances /tmp/sigma /tmp/kahypar
 **Output:**
 ```
 ==========================================================================================
-COMPARISON: sigma_freud vs Mt-KaHyPar
+COMPARISON: Sigma Freud vs Mt-KaHyPar
 ==========================================================================================
 Instance                          sigma KM1  kahypar KM1     winner        gap
 ------------------------------------------------------------------------------------------
@@ -226,7 +268,7 @@ Instance                          sigma KM1  kahypar KM1     winner        gap
 
 SUMMARY
   Instances: 10
-  sigma_freud wins: 8/10
+  Sigma Freud wins: 8/10
   Average gap: -1.57% (negative = sigma better)
   Speedup: 4.9x
 ```
@@ -261,6 +303,8 @@ This allows third parties to:
 - Run either solver independently
 - Verify KM1 scores with simple, auditable Python code
 
+The benchmark scripts pass an explicit refinement count. To reproduce the default-refinement results in this README, use the `hg_bench gen` commands in the "Reproducing Published Results" section instead.
+
 ---
 
 ## Usage (Combined Tool)
@@ -280,7 +324,7 @@ Commands:
 
 ### Generate and Benchmark
 
-Generate instances using TIG's specification, solve with sigma_freud, and export for comparison:
+Generate instances using TIG's specification, solve with Sigma Freud, and export for comparison:
 
 ```bash
 ./target/release/hg_bench gen \
@@ -302,7 +346,7 @@ python3 tools/compare_kahypar.py \
     "/tmp/benchmark/challenge_100000_*.hgr" \
     --batch \
     --threads 16 \
-    --preset quality
+    --preset highest_quality
 ```
 
 **Sample Output:**
@@ -311,10 +355,10 @@ python3 tools/compare_kahypar.py \
 SUMMARY
 ======================================================================
 Instances: 10
-Record: 7 wins / 0 ties / 3 losses
-Gap: mean=-1.70%, median=-2.09% (negative = you're better)
-Avg Mt-KaHyPar time: partition=3.26s
-Avg Your time: 2.74s (speedup: 1.2x)
+Record: 10 wins / 0 ties / 0 losses
+Gap: mean=-3.64%, median=-4.29% (negative = you're better)
+Avg Mt-KaHyPar time: partition=31.42s
+Avg Your time: 9.60s (speedup: 3.3x)
 All your partitions are FEASIBLE
 ```
 
@@ -370,16 +414,16 @@ Note: KM1 = Σ(λ(e)-1) where λ(e) = parts connected by hyperedge e
 | `-r, --refinement <N>` | Override refinement iterations | Auto (based on effort) |
 
 **Effort Levels:**
-| Level | Refinement Rounds | Use Case |
-|-------|------------------|----------|
-| 0 | 300 | Quick testing |
-| 1 | 400 | Fast results |
-| 2 | 500 | Balanced (default) |
-| 3 | 600 | Quality focus |
-| 4 | 800 | High quality |
-| 5 | 1000 | Maximum quality |
+| Level | Use Case |
+|-------|----------|
+| 0 | Quick testing |
+| 1 | Fast results |
+| 2 | Balanced |
+| 3 | Quality focus (latest benchmark default) |
+| 4 | High quality |
+| 5 | Maximum quality |
 
-**Note:** The `--refinement` flag overrides effort-based defaults. Published benchmarks use `--refinement 2000`. For maximum quality, values up to 5000 can be used at the cost of increased runtime.
+**Note:** Refinement budgets are track-specific and selected inside the solver's `track_*.rs` files from the chosen `effort`. The `--refinement` flag overrides those per-track defaults. Latest README results omit `--refinement`.
 
 ### `file` Command
 
@@ -409,19 +453,19 @@ To reproduce the benchmark results from this README:
 # Ensure CUDA is accessible
 export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
 
-# Run complete benchmark suite
+# Run all tracks with default per-track refinement
 for track in 10000 20000 50000 100000 200000; do
     echo "=== Track: $track hyperedges ==="
     
     # Clean output directory before each run
     rm -rf /tmp/bench_${track}
     
-    # Generate and solve with refinement=2000
+    # Generate and solve with default per-track refinement at effort=3
     ./target/release/hg_bench gen \
         --track $track \
         --nonces 10 \
         --out /tmp/bench_${track} \
-        --refinement 2000
+        --effort 3
     
     # Compare against Mt-KaHyPar highest_quality preset
     python3 tools/compare_kahypar.py \
@@ -434,15 +478,23 @@ for track in 10000 20000 50000 100000 200000; do
 done
 ```
 
-**Expected runtime:** ~45 minutes on RTX 5070 Ti + 16-thread CPU (Mt-KaHyPar `highest_quality` is compute-intensive)
+Do not pass `--refinement` if you want the solver to use the defaults embedded in each track file.
+
+**Expected runtime:** varies by track on RTX 5070 Ti + 16-thread CPU; Mt-KaHyPar `highest_quality` dominates runtime for larger tracks.
 
 ## Algorithm Description
 
-sigma_freud_v6 is a GPU-accelerated hypergraph partitioner that combines multiple optimization techniques:
+Sigma Freud V8 is a CUDA/Rust implementation of a deterministic capacity-aware method for balanced k-way hypergraph partitioning under the KM1/connectivity objective.
 
-### Novel Contribution: Dual Bitmask KM1 Gain Model
+The implementation should not be read as claiming that hypergraph partitioning, GPU execution, FM-style refinement, tabu search, ILS, recombination, or swap moves are individually new. Those are known techniques. The claimed contribution is the specific method composition used here: compact dual-mask KM1 gain estimation, quota-bounded deterministic move replay, balance-preserving exchange refinement, and hyperedge-guided perturbation, combined in a pipeline tuned for the TIG k=64 balanced KM1 objective.
 
-The core algorithmic innovation is a constant-time move gain computation for the KM1 (connectivity) objective using two precomputed bitmasks per hyperedge:
+### Candidate Advance Method: Deterministic Hyperedge-Consensus and Quota-Replayed Refinement
+
+The method combines compact dual-bitmask KM1 gain estimation, deterministic quota-bounded move selection and host replay, balance-preserving swap and cycle refinement, hyperedge-guided perturbation, and deterministic consensus/relinking against retained high-quality partitions or best-known assignments. The CUDA/Rust code in this repository is one implementation of that method, with track-specific parameterisation for different TIG instance sizes.
+
+### Component: Dual Bitmask KM1 Gain Model
+
+One core implementation component is a constant-time move gain computation for the KM1 (connectivity) objective using two precomputed bitmasks per hyperedge:
 
 - **`edge_flags_all`**: Bitmask indicating which partitions have *any* node in this hyperedge
 - **`edge_flags_double`**: Bitmask indicating which partitions have *two or more* nodes in this hyperedge
@@ -461,11 +513,15 @@ The refinement loop uses tabu search to prevent cycling, with an aspiration crit
 
 #### Balance-Neutral Swap Moves
 
-Beyond single-node relocations, v6 introduces balance-neutral swap moves where pairs of nodes in different partitions are exchanged simultaneously. This escapes local optima unreachable by standard single-node moves while preserving the balance constraint exactly. A 3-way cycle extension further generalises this to triplets (A→B, B→C, C→A), with best-gain tracking and early-break pruning for efficiency.
+Beyond single-node relocations, the solver uses balance-neutral swap moves where pairs of nodes in different partitions are exchanged simultaneously. This escapes local optima unreachable by standard single-node moves while preserving the balance constraint exactly. A 3-way cycle extension further generalises this to triplets (A→B, B→C, C→A), with best-gain tracking and early-break pruning for efficiency.
 
 #### Hyperedge-Guided Perturbation
 
-The ILS perturbation phase in v6 identifies high-connectivity hyperedges and preferentially relocates their nodes toward the majority partition. This focuses disruption on the most costly connectivity regions of the current solution, improving the quality of ILS restarts compared to uniform random perturbation.
+The ILS perturbation phase identifies high-connectivity hyperedges and preferentially relocates their nodes toward the majority partition. This focuses disruption on the most costly connectivity regions of the current solution, improving the quality of ILS restarts compared to uniform random perturbation.
+
+#### Consensus / Relinking Against High-Quality Assignments
+
+The solver retains high-quality assignments and uses deterministic consensus or relinking steps to bias new candidate partitions toward locally successful structures while preserving the balance constraint. In the current implementation, this includes per-hyperedge elite voting/relinking logic that reuses useful hyperedge-local structure without relying on nondeterministic crossover.
 
 #### Deterministic GPU Pipeline
 
@@ -528,7 +584,7 @@ One line per node, containing the block ID (0 to k-1):
 
 - Requires NVIDIA GPU (Turing architecture or newer: RTX 20/30/40/50 series, GTX 16 series)
 - Optimized for k=64 partitions (TIG challenge specification)
-- Peak advantage at 50k+ hyperedges (2-9x faster than Mt-KaHyPar with better quality)
+- Runtime advantage appears from 50k+ hyperedges under the published protocol, reaching 5.9x faster than Mt-KaHyPar on the 200k track while also improving KM1 quality.
 - Single-GPU implementation (no multi-GPU support)
 
 ## Citation
@@ -536,9 +592,9 @@ One line per node, containing the block ID (0 to k-1):
 If you use this work in academic research, please cite:
 
 ```
-@software{sigma_freud_v6,
+@software{sigma_freud_v8,
   author = {rootztigmod},
-  title = {sigma_freud: GPU-Accelerated Hypergraph Partitioner},
+  title = {Sigma Freud V8: GPU-Accelerated Hypergraph Partitioner},
   year = {2026},
   url = {https://github.com/rootztigmod/hypergraph-partitioner}
 }
@@ -546,7 +602,7 @@ If you use this work in academic research, please cite:
 
 ## Related Work
 
-The following prior work informed the design of sigma_freud_v6:
+The following prior work informed the design of Sigma Freud:
 
 - **Fiduccia & Mattheyses (1982)** — "A Linear-Time Heuristic for Improving Network Partitions." *19th ACM/IEEE Design Automation Conference.* The foundational move-based refinement framework underlying the refinement loop.
 
@@ -554,9 +610,15 @@ The following prior work informed the design of sigma_freud_v6:
 
 - **Lourenço, H.R., Martin, O.C. & Stützle, T. (2003)** — "Iterated Local Search." In *Handbook of Metaheuristics*, Springer. The ILS framework underpinning the perturbation and re-optimisation strategy.
 
-- **Schlag, S. et al. (2023)** — "High-Quality Hypergraph Partitioning." *ACM Journal of Experimental Algorithmics.* The Mt-KaHyPar baseline used for comparison throughout this benchmark.
+- **Schlag et al. — "High-Quality Hypergraph Partitioning"**: describes KaHyPar, a high-quality multilevel hypergraph partitioner for cut and λ−1/connectivity objectives.
 
-The dual bitmask KM1 gain model (a GPU-oriented constant-time gain formulation using two 64-bit bitmasks), balance-neutral swap moves for hypergraph KM1 refinement, 3-way cycle moves, and hyperedge-guided perturbation are original contributions not present in the prior literature surveyed.
+- **Gottesbüren et al. — "Scalable High-Quality Hypergraph Partitioning"**: describes Mt-KaHyPar, the shared-memory high-quality hypergraph partitioning framework used as the principal baseline in this repository.
+
+- **KaHyPar-E and memetic hypergraph partitioning work**: prior work explores evolutionary, recombination, and mutation-style search for high-quality hypergraph partitioning. Sigma Freud does not claim novelty merely from using elite solutions, consensus/recombination, or perturbation concepts.
+
+- **Wu et al. — "gHyPart: GPU-friendly End-to-End Hypergraph Partitioner"**: demonstrates that GPU hypergraph partitioning is known prior art. Sigma Freud does not claim novelty merely from executing hypergraph partitioning on a GPU.
+
+The claimed novelty is not that hypergraph partitioning, FM-style refinement, tabu search, ILS, recombination, swap moves, or GPU execution are individually new. The claimed novelty is the specific combination and sequencing used here: compact dual-mask KM1 gain estimation, deterministic quota-bounded move replay, balance-preserving exchange refinement, and hyperedge-guided perturbation applied to the TIG balanced k-way KM1 objective.
 
 ## Acknowledgments
 

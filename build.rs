@@ -6,9 +6,19 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     
     let kernel_path = "kernels/solver.cu";
+    let included_kernel_paths = [
+        "kernels/kernels_10k.cu",
+        "kernels/kernels_20k.cu",
+        "kernels/kernels_50k.cu",
+        "kernels/kernels_100k.cu",
+        "kernels/kernels_200k.cu",
+    ];
     let ptx_path = out_dir.join("solver.ptx");
     
     println!("cargo:rerun-if-changed={}", kernel_path);
+    for path in included_kernel_paths {
+        println!("cargo:rerun-if-changed={}", path);
+    }
     
     // Compile to virtual PTX (compute_75) for forward compatibility with any GPU
     // including Blackwell (sm_120). CUDA's runtime JIT will compile for the actual device.
