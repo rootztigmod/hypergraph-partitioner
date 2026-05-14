@@ -8,20 +8,6 @@ This repository provides a standalone benchmark harness for Sigma Freud V9, a CU
 
 The benchmark claims in this README are specific to the TIG-style generated hypergraph instances and protocol described below. They should not be read as universal state-of-the-art claims across all public hypergraph partitioning benchmark suites.
 
-## Advance Evidence Method
-
-The candidate Advance method is **Deterministic Hyperedge-Consensus and Quota-Replayed Refinement for Balanced k-Way Hypergraph Partitioning**.
-
-The submitted method is an abstract algorithmic method for balanced k-way hypergraph partitioning. It combines:
-
-1. compact dual-bitmask KM1 gain estimation;
-2. deterministic quota-bounded move selection and host replay;
-3. balance-preserving swap and cycle refinement;
-4. hyperedge-guided perturbation;
-5. deterministic consensus/relinking against retained high-quality partitions or best-known assignments.
-
-The CUDA/Rust implementation in this repository is one embodiment of that method, with track-specific parameterisation for different TIG instance sizes.
-
 ### Key Results (vs Mt-KaHyPar `highest_quality` preset)
 
 Latest default-refinement results on 10 instances per measured track:
