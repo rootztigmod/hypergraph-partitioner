@@ -4,7 +4,7 @@ A CUDA/Rust hypergraph partitioner that achieves lower KM1 connectivity than Mt-
 
 ## Overview
 
-This repository provides a standalone benchmark harness for Sigma Freud V9, a CUDA/Rust implementation of a GPU-accelerated hypergraph partitioning method developed for [TIG (The Innovation Game)](https://github.com/tig-foundation/tig-monorepo). The current harness uses the solver from `tig-algorithms/src/hypergraph/sigma_freud_v9`, with the same TIG challenge generation and local KM1 verification pipeline used for comparison against Mt-KaHyPar.
+This repository provides a standalone benchmark harness for Sigma Freud V9, a CUDA/Rust implementation of a GPU-accelerated hypergraph partitioning method developed for [TIG (The Innovation Game)](https://github.com/tig-foundation/tig-monorepo). The current harness uses the solver from `sigma_freud_v9`, with the same TIG challenge generation and local KM1 verification pipeline used for comparison against Mt-KaHyPar.
 
 The benchmark claims in this README are specific to the TIG-style generated hypergraph instances and protocol described below. They should not be read as universal state-of-the-art claims across all public hypergraph partitioning benchmark suites.
 
